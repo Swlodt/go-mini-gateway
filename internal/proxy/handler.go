@@ -1,79 +1,87 @@
 package proxy
 
 import (
-	"io"
+	"fmt"
 	"log"
 	"net/http"
+	"net/http/httputil"
 	"net/url"
 	"strings"
 	"time"
 )
 
+const (
+	apiPrefix   = "/api"
+	gatewayName = "go-mini-gateway"
+)
+
 type Handler struct {
-	target *url.URL
-	client *http.Client
+	reverseProxy *httputil.ReverseProxy
 }
 
 func New(target string) (*Handler, error) {
-	targetUrl, err := url.Parse(target)
+	targetURL, err := url.Parse(target)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("parse proxy target url %q failed: %w", target, err)
 	}
-	return &Handler{
-		target: targetUrl,
-		client: &http.Client{
-			Timeout: 10 * time.Second,
+	if targetURL.Scheme == "" || targetURL.Host == "" {
+		return nil, fmt.Errorf("invalid proxy target %q: schema and host are required", target)
+	}
+
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+
+	transport.MaxIdleConns = 100
+	transport.MaxIdleConnsPerHost = 20
+	transport.MaxConnsPerHost = 100
+	transport.IdleConnTimeout = 90 * time.Second
+	transport.ResponseHeaderTimeout = 10 * time.Second
+	transport.TLSHandshakeTimeout = 10 * time.Second
+	transport.ExpectContinueTimeout = 1 * time.Second
+
+	rp := &httputil.ReverseProxy{
+		Transport: transport,
+
+		Rewrite: func(pr *httputil.ProxyRequest) {
+			rewriteRequest(pr, targetURL)
 		},
+
+		ModifyResponse: func(resp *http.Response) error {
+			resp.Header.Set("X-Gateway", gatewayName)
+			return nil
+		},
+
+		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
+			log.Printf("proxy backend request failed: method=%s path=%s err=%v", r.Method, r.URL.Path, err)
+			http.Error(w, "backend unavailable", http.StatusBadGateway)
+		},
+	}
+
+	return &Handler{
+		reverseProxy: rp,
 	}, nil
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	targetUrl := *h.target
-	targetUrl.Path = strings.TrimPrefix(r.URL.Path, "/api")
-	if targetUrl.Path == "" {
-		targetUrl.Path = "/"
-	}
-
-	targetUrl.RawQuery = r.URL.RawQuery
-
-	outReq, err := http.NewRequestWithContext(
-		r.Context(),
-		r.Method,
-		targetUrl.String(),
-		r.Body,
-	)
-	if err != nil {
-		http.Error(w, "create backend request failed", http.StatusInternalServerError)
-		return
-	}
-	outReq.Header = r.Header.Clone()
-
-	resp, err := h.client.Do(outReq)
-	if err != nil {
-		log.Printf("proxy request failed: method=%s path=%s err=%v", r.Method, r.URL.Path, err)
-		http.Error(w, "backend unavailable", http.StatusBadGateway)
-		return
-	}
-	defer func(Body io.ReadCloser) {
-		err := Body.Close()
-		if err != nil {
-		}
-	}(resp.Body)
-
-	copyHeader(w.Header(), resp.Header)
-
-	w.WriteHeader(resp.StatusCode)
-
-	if _, err := io.Copy(w, resp.Body); err != nil {
-		log.Printf("copy backend response failed: method=%s path=%s err=%v", r.Method, r.URL.Path, err)
-	}
-
+	h.reverseProxy.ServeHTTP(w, r)
 }
 
-func copyHeader(dst, src http.Header) {
-	for k, v := range src {
-		for _, iv := range v {
-			dst.Add(k, iv)
-		}
+func rewriteRequest(pr *httputil.ProxyRequest, target *url.URL) {
+	pr.SetURL(target)
+
+	path := strings.TrimPrefix(pr.In.URL.Path, apiPrefix)
+	if path == "" {
+		path = "/"
 	}
+
+	pr.Out.URL.Path = path
+	pr.Out.URL.RawPath = ""
+
+	pr.SetXForwarded()
+	pr.Out.Header.Set("X-Gateway", gatewayName)
+
+	traceID := pr.In.Header.Get("X-Trace-ID")
+	if traceID == "" {
+		traceID = fmt.Sprintf("trace-%d", time.Now().UnixNano())
+	}
+	pr.Out.Header.Set("X-Trace-ID", traceID)
 }
