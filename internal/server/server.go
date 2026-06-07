@@ -16,16 +16,38 @@ import (
 )
 
 type Server struct {
-	httpServer     *http.Server
+	httpServer               *http.Server
+	routes                   []*routeRuntime
+	proxyHandlers            []*proxy.Handler
+	rateLimiters             []*ratelimit.TokenBucket
+	healthCheckers           []*health.Checker
+	globalRateLimiter        *ratelimit.TokenBucket
+	globalConcurrencyLimiter *concurrency.Limiter
+}
+
+type routeRegisterResult struct {
+	routes         []*routeRuntime
 	proxyHandlers  []*proxy.Handler
 	rateLimiters   []*ratelimit.TokenBucket
 	healthCheckers []*health.Checker
 }
 
-type routeRegisterResult struct {
-	proxyHandlers  []*proxy.Handler
-	rateLimiters   []*ratelimit.TokenBucket
-	healthCheckers []*health.Checker
+type routeRuntime struct {
+	id             string
+	prefix         string
+	stripPrefix    string
+	target         string
+	rateLimitRPS   int
+	rateLimitBurst int
+	maxConcurrency int
+
+	healthCheckEnabled bool
+	healthCheckPath    string
+
+	proxyHandler       *proxy.Handler
+	rateLimiter        *ratelimit.TokenBucket
+	concurrencyLimiter *concurrency.Limiter
+	healthChecker      *health.Checker
 }
 
 func New(cfg *config.Config) (*Server, error) {
@@ -49,16 +71,30 @@ func New(cfg *config.Config) (*Server, error) {
 
 	handler = timeoutMiddleware(requestTimeout)(handler)
 
+	var globalConcurrencyLimiter *concurrency.Limiter
+	var globalLimiter *ratelimit.TokenBucket
+
 	if cfg.Server.MaxConcurrency > 0 {
-		globalConcurrencyLimiter := concurrency.NewLimiter("global", cfg.Server.MaxConcurrency)
+		globalConcurrencyLimiter = concurrency.NewLimiter("global", cfg.Server.MaxConcurrency)
 		handler = concurrency.Middleware("global", globalConcurrencyLimiter)(handler)
 	}
 
 	if cfg.Server.RateLimitRPS > 0 {
-		globalLimiter := ratelimit.NewTokenBucket("global", cfg.Server.RateLimitRPS, cfg.Server.RateLimitBurst)
+		globalLimiter = ratelimit.NewTokenBucket("global", cfg.Server.RateLimitRPS, cfg.Server.RateLimitBurst)
 		routeResult.rateLimiters = append(routeResult.rateLimiters, globalLimiter)
 		handler = ratelimit.Middleware("global", globalLimiter)(handler)
 	}
+
+	srv := &Server{
+		routes:                   routeResult.routes,
+		proxyHandlers:            routeResult.proxyHandlers,
+		rateLimiters:             routeResult.rateLimiters,
+		healthCheckers:           routeResult.healthCheckers,
+		globalRateLimiter:        globalLimiter,
+		globalConcurrencyLimiter: globalConcurrencyLimiter,
+	}
+
+	srv.registerAdminRoutes(mux)
 
 	handler = accessLogMiddleware(handler)
 
@@ -68,16 +104,14 @@ func New(cfg *config.Config) (*Server, error) {
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
-	return &Server{
-		httpServer:     server,
-		proxyHandlers:  routeResult.proxyHandlers,
-		rateLimiters:   routeResult.rateLimiters,
-		healthCheckers: routeResult.healthCheckers,
-	}, nil
+	srv.httpServer = server
+
+	return srv, nil
 }
 
 func registerRoutes(mux *http.ServeMux, routes []config.RouteConfig) (*routeRegisterResult, error) {
 	result := &routeRegisterResult{
+		routes:         make([]*routeRuntime, 0, len(routes)),
 		proxyHandlers:  make([]*proxy.Handler, 0, len(routes)),
 		rateLimiters:   make([]*ratelimit.TokenBucket, 0),
 		healthCheckers: make([]*health.Checker, 0),
@@ -91,6 +125,19 @@ func registerRoutes(mux *http.ServeMux, routes []config.RouteConfig) (*routeRegi
 		})
 		if err != nil {
 			return nil, fmt.Errorf("create proxy handler for route %q failed: %w", route.ID, err)
+		}
+
+		runtimeRoute := &routeRuntime{
+			id:                 route.ID,
+			prefix:             route.Prefix,
+			stripPrefix:        route.StripPrefix,
+			target:             route.Target,
+			rateLimitRPS:       route.RateLimitRPS,
+			rateLimitBurst:     route.RateLimitBurst,
+			maxConcurrency:     route.MaxConcurrency,
+			healthCheckEnabled: route.HealthCheck.Enabled,
+			healthCheckPath:    route.HealthCheck.Path,
+			proxyHandler:       proxyHandler,
 		}
 
 		var routeHandler http.Handler = proxyHandler
@@ -115,6 +162,8 @@ func registerRoutes(mux *http.ServeMux, routes []config.RouteConfig) (*routeRegi
 				return nil, fmt.Errorf("create health checker for route %q failed: %w", route.ID, err)
 			}
 			checker.Start()
+
+			runtimeRoute.healthChecker = checker
 			result.healthCheckers = append(result.healthCheckers, checker)
 			routeHandler = health.Middleware(checker)(routeHandler)
 		}
@@ -122,6 +171,8 @@ func registerRoutes(mux *http.ServeMux, routes []config.RouteConfig) (*routeRegi
 		if route.MaxConcurrency > 0 {
 			limitName := "route:" + route.ID
 			routeConcurrencyLimiter := concurrency.NewLimiter(limitName, route.MaxConcurrency)
+
+			runtimeRoute.concurrencyLimiter = routeConcurrencyLimiter
 			routeHandler = concurrency.Middleware(limitName, routeConcurrencyLimiter)(routeHandler)
 		}
 
@@ -129,6 +180,7 @@ func registerRoutes(mux *http.ServeMux, routes []config.RouteConfig) (*routeRegi
 			limiterName := "route:" + route.ID
 			routeLimiter := ratelimit.NewTokenBucket(limiterName, route.RateLimitRPS, route.RateLimitBurst)
 
+			runtimeRoute.rateLimiter = routeLimiter
 			result.rateLimiters = append(result.rateLimiters, routeLimiter)
 			routeHandler = ratelimit.Middleware(limiterName, routeLimiter)(routeHandler)
 		}
@@ -156,6 +208,7 @@ func registerRoutes(mux *http.ServeMux, routes []config.RouteConfig) (*routeRegi
 			mux.Handle(exactPath, routeHandler)
 		}
 
+		result.routes = append(result.routes, runtimeRoute)
 		result.proxyHandlers = append(result.proxyHandlers, proxyHandler)
 	}
 	return result, nil

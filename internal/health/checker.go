@@ -25,8 +25,24 @@ type Checker struct {
 	checked atomic.Bool
 	healthy atomic.Bool
 
+	mu          sync.RWMutex
+	lastCheckAt time.Time
+	lastReason  string
+
 	done chan struct{}
 	once sync.Once
+}
+
+type Snapshot struct {
+	Name          string `json:"name"`
+	Target        string `json:"target"`
+	Path          string `json:"path"`
+	Interval      string `json:"interval"`
+	Timeout       string `json:"timeout"`
+	Checked       bool   `json:"checked"`
+	Healthy       bool   `json:"healthy"`
+	LastCheckedAt string `json:"lastCheckedAt,omitempty"`
+	LastReason    string `json:"lastReason,omitempty"`
 }
 
 type Options struct {
@@ -180,6 +196,11 @@ func (c *Checker) update(healthy bool, reason string) {
 	oldChecked := c.checked.Load()
 	oldHealthy := c.healthy.Load()
 
+	c.mu.Lock()
+	c.lastCheckAt = time.Now()
+	c.lastReason = reason
+	c.mu.Unlock()
+
 	c.healthy.Store(healthy)
 	c.checked.Store(true)
 
@@ -190,5 +211,36 @@ func (c *Checker) update(healthy bool, reason string) {
 			healthy,
 			reason,
 		)
+	}
+}
+
+func (c *Checker) SnapShot() Snapshot {
+	if c == nil {
+		return Snapshot{
+			Checked: true,
+			Healthy: true,
+		}
+	}
+
+	c.mu.RLock()
+	lastCheckAt := c.lastCheckAt
+	lastReason := c.lastReason
+	c.mu.RUnlock()
+
+	var lastCheckedAsText string
+	if !lastCheckAt.IsZero() {
+		lastCheckedAsText = lastCheckAt.Format(time.RFC3339Nano)
+	}
+
+	return Snapshot{
+		Name:          c.name,
+		Target:        c.target.String(),
+		Path:          c.path,
+		Interval:      c.interval.String(),
+		Timeout:       c.timeout.String(),
+		Checked:       c.checked.Load(),
+		Healthy:       c.healthy.Load(),
+		LastCheckedAt: lastCheckedAsText,
+		LastReason:    lastReason,
 	}
 }

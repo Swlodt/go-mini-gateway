@@ -6,6 +6,13 @@ type Limiter struct {
 	semaphore chan struct{}
 }
 
+type Snapshot struct {
+	Name      string `json:"name"`
+	Capacity  int    `json:"capacity"`
+	InUse     int    `json:"inUse"`
+	Available int    `json:"available"`
+}
+
 func NewLimiter(name string, maxConcurrency int) *Limiter {
 	if maxConcurrency <= 0 {
 		return nil
@@ -60,4 +67,17 @@ func (l *Limiter) Name() string {
 		return ""
 	}
 	return l.name
+}
+
+func (l *Limiter) Snapshot() Snapshot {
+	if l == nil {
+		return Snapshot{}
+	}
+	inUse := len(l.semaphore)
+	return Snapshot{
+		Name:      l.Name(),
+		Capacity:  l.Capacity(),
+		InUse:     inUse,
+		Available: l.Capacity() - inUse,
+	}
 }

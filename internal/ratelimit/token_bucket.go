@@ -16,6 +16,13 @@ type TokenBucket struct {
 	once   sync.Once
 }
 
+type SnapShot struct {
+	Name            string `json:"name"`
+	Rate            int    `json:"rate"`
+	Burst           int    `json:"burst"`
+	AvailableTokens int    `json:"availableTokens"`
+}
+
 func NewTokenBucket(name string, rate int, burst int) *TokenBucket {
 	if rate <= 0 {
 		return nil
@@ -71,6 +78,17 @@ func (b *TokenBucket) refill() {
 		case <-b.done:
 			return
 		}
+	}
+}
 
+func (b *TokenBucket) Snapshot() SnapShot {
+	if b == nil {
+		return SnapShot{}
+	}
+	return SnapShot{
+		Name:            b.name,
+		Rate:            b.rate,
+		Burst:           b.burst,
+		AvailableTokens: len(b.tokens),
 	}
 }
