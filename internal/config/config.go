@@ -30,13 +30,21 @@ type ServerConfig struct {
 }
 
 type RouteConfig struct {
-	ID             string `json:"id"`
-	Prefix         string `json:"prefix"`
-	StripPrefix    string `json:"StripPrefix"`
-	Target         string `json:"target"`
-	RateLimitRPS   int    `json:"rateLimitRPS"`
-	RateLimitBurst int    `json:"rateLimitBurst"`
-	MaxConcurrency int    `json:"maxConcurrency"`
+	ID             string            `json:"id"`
+	Prefix         string            `json:"prefix"`
+	StripPrefix    string            `json:"StripPrefix"`
+	Target         string            `json:"target"`
+	RateLimitRPS   int               `json:"rateLimitRPS"`
+	RateLimitBurst int               `json:"rateLimitBurst"`
+	MaxConcurrency int               `json:"maxConcurrency"`
+	HealthCheck    HealthCheckConfig `json:"healthCheck"`
+}
+
+type HealthCheckConfig struct {
+	Enabled  bool   `json:"enabled"`
+	Path     string `json:"path"`
+	Interval string `json:"interval"`
+	Timeout  string `json:"timeout"`
 }
 
 func (c *Config) Addr() string {
@@ -109,6 +117,22 @@ func normalize(cfg *Config) {
 
 		if cfg.Routes[i].RateLimitRPS > 0 && cfg.Routes[i].RateLimitBurst <= 0 {
 			cfg.Routes[i].RateLimitBurst = cfg.Routes[i].RateLimitRPS
+		}
+
+		if cfg.Routes[i].HealthCheck.Enabled {
+			cfg.Routes[i].HealthCheck.Path = strings.TrimSpace(cfg.Routes[i].HealthCheck.Path)
+			if cfg.Routes[i].HealthCheck.Path == "" {
+				cfg.Routes[i].HealthCheck.Path = "/health"
+			}
+			if !strings.HasPrefix(cfg.Routes[i].HealthCheck.Path, "/") {
+				cfg.Routes[i].HealthCheck.Path = "/" + cfg.Routes[i].HealthCheck.Path
+			}
+			if cfg.Routes[i].HealthCheck.Interval == "" {
+				cfg.Routes[i].HealthCheck.Interval = "5s"
+			}
+			if cfg.Routes[i].HealthCheck.Timeout == "" {
+				cfg.Routes[i].HealthCheck.Timeout = "1s"
+			}
 		}
 	}
 }
@@ -209,6 +233,9 @@ func validate(cfg *Config) error {
 		if err := validateMaxConcurrency(fmt.Sprintf("route[%d]", i), route.MaxConcurrency); err != nil {
 			return err
 		}
+		if err := validateHealthCheck(fmt.Sprintf("route[%d]", i), route.HealthCheck); err != nil {
+			return err
+		}
 	}
 
 	return nil
@@ -241,4 +268,62 @@ func validateMaxConcurrency(scope string, maxConcurrency int) error {
 		return fmt.Errorf("%s.maxConcurrency is too large: %d", scope, maxConcurrency)
 	}
 	return nil
+}
+
+func validateHealthCheck(scope string, healthCheck HealthCheckConfig) error {
+	if !healthCheck.Enabled {
+		return nil
+	}
+	if healthCheck.Path == "" {
+		return fmt.Errorf("%s.healthCheck.path is required when health check is enabled", scope)
+	}
+	if !strings.HasPrefix(healthCheck.Path, "/") {
+		return fmt.Errorf("%s.healthCheck.path must start with /", scope)
+	}
+
+	interval, err := healthCheck.IntervalDuration()
+	if err != nil {
+		return fmt.Errorf("%s.%w", scope, err)
+	}
+	timeout, err := healthCheck.TimeoutDuration()
+	if err != nil {
+		return fmt.Errorf("%s.%w", scope, err)
+	}
+	if interval <= 0 {
+		return fmt.Errorf("%s.healthCheck.interval cannot be <= 0", scope)
+	}
+	if timeout <= 0 {
+		return fmt.Errorf("%s.healthCheck.timeout cannot be <= 0", scope)
+	}
+	if timeout >= interval {
+		return fmt.Errorf(
+			"%s.healthCheck.timeout must be less than interval, timeout=%s interval=%s",
+			scope,
+			timeout,
+			interval,
+		)
+	}
+	return nil
+}
+
+func (h HealthCheckConfig) IntervalDuration() (time.Duration, error) {
+	if h.Interval == "" {
+		return 5 * time.Second, nil
+	}
+	d, err := time.ParseDuration(h.Interval)
+	if err != nil {
+		return 0, fmt.Errorf("invalid healthCheck.interval %q: %w", h.Interval, err)
+	}
+	return d, nil
+}
+
+func (h HealthCheckConfig) TimeoutDuration() (time.Duration, error) {
+	if h.Timeout == "" {
+		return 1 * time.Second, nil
+	}
+	d, err := time.ParseDuration(h.Timeout)
+	if err != nil {
+		return 0, fmt.Errorf("invalid healthCheck.timeout %q: %w", h.Timeout, err)
+	}
+	return d, nil
 }

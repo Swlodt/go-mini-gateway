@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"go-mini-gateway/internal/concurrency"
 	"go-mini-gateway/internal/config"
+	"go-mini-gateway/internal/health"
 	"go-mini-gateway/internal/proxy"
 	"go-mini-gateway/internal/ratelimit"
 	"log"
@@ -15,14 +16,16 @@ import (
 )
 
 type Server struct {
-	httpServer    *http.Server
-	proxyHandlers []*proxy.Handler
-	rateLimiters  []*ratelimit.TokenBucket
+	httpServer     *http.Server
+	proxyHandlers  []*proxy.Handler
+	rateLimiters   []*ratelimit.TokenBucket
+	healthCheckers []*health.Checker
 }
 
 type routeRegisterResult struct {
-	proxyHandlers []*proxy.Handler
-	rateLimiters  []*ratelimit.TokenBucket
+	proxyHandlers  []*proxy.Handler
+	rateLimiters   []*ratelimit.TokenBucket
+	healthCheckers []*health.Checker
 }
 
 func New(cfg *config.Config) (*Server, error) {
@@ -66,16 +69,18 @@ func New(cfg *config.Config) (*Server, error) {
 	}
 
 	return &Server{
-		httpServer:    server,
-		proxyHandlers: routeResult.proxyHandlers,
-		rateLimiters:  routeResult.rateLimiters,
+		httpServer:     server,
+		proxyHandlers:  routeResult.proxyHandlers,
+		rateLimiters:   routeResult.rateLimiters,
+		healthCheckers: routeResult.healthCheckers,
 	}, nil
 }
 
 func registerRoutes(mux *http.ServeMux, routes []config.RouteConfig) (*routeRegisterResult, error) {
 	result := &routeRegisterResult{
-		proxyHandlers: make([]*proxy.Handler, 0, len(routes)),
-		rateLimiters:  make([]*ratelimit.TokenBucket, 0),
+		proxyHandlers:  make([]*proxy.Handler, 0, len(routes)),
+		rateLimiters:   make([]*ratelimit.TokenBucket, 0),
+		healthCheckers: make([]*health.Checker, 0),
 	}
 
 	for _, route := range routes {
@@ -89,6 +94,30 @@ func registerRoutes(mux *http.ServeMux, routes []config.RouteConfig) (*routeRegi
 		}
 
 		var routeHandler http.Handler = proxyHandler
+
+		if route.HealthCheck.Enabled {
+			interval, err := route.HealthCheck.IntervalDuration()
+			if err != nil {
+				return nil, err
+			}
+			timeout, err := route.HealthCheck.TimeoutDuration()
+			if err != nil {
+				return nil, err
+			}
+			checker, err := health.NewChecker(health.Options{
+				Name:     route.ID,
+				Target:   route.Target,
+				Path:     route.HealthCheck.Path,
+				Interval: interval,
+				Timeout:  timeout,
+			})
+			if err != nil {
+				return nil, fmt.Errorf("create health checker for route %q failed: %w", route.ID, err)
+			}
+			checker.Start()
+			result.healthCheckers = append(result.healthCheckers, checker)
+			routeHandler = health.Middleware(checker)(routeHandler)
+		}
 
 		if route.MaxConcurrency > 0 {
 			limitName := "route:" + route.ID
@@ -107,14 +136,17 @@ func registerRoutes(mux *http.ServeMux, routes []config.RouteConfig) (*routeRegi
 		prefix := route.Prefix
 
 		log.Printf(
-			"register route id=%s prefix=%s stripPrefix=%s target=%s rateLimitRPS=%d rateLimitBurst=%d maxConcurrency=%d",
+			"register route id=%s prefix=%s stripPrefix=%s target=%s rateLimitRPS=%d "+
+				"rateLimitBurst=%d maxConcurrency=%d healthCheckEnabled=%v healthCheckPath=%s",
 			route.ID,
-			prefix,
+			route.Prefix,
 			route.StripPrefix,
 			route.Target,
 			route.RateLimitRPS,
 			route.RateLimitBurst,
 			route.MaxConcurrency,
+			route.HealthCheck.Enabled,
+			route.HealthCheck.Path,
 		)
 
 		mux.Handle(prefix, routeHandler)
@@ -158,6 +190,9 @@ func (s *Server) CloseResource() {
 	}
 	for _, limiter := range s.rateLimiters {
 		limiter.Close()
+	}
+	for _, checker := range s.healthCheckers {
+		checker.Close()
 	}
 }
 
