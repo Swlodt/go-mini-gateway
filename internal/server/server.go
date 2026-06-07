@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"go-mini-gateway/internal/concurrency"
 	"go-mini-gateway/internal/config"
 	"go-mini-gateway/internal/proxy"
 	"go-mini-gateway/internal/ratelimit"
@@ -45,6 +46,11 @@ func New(cfg *config.Config) (*Server, error) {
 
 	handler = timeoutMiddleware(requestTimeout)(handler)
 
+	if cfg.Server.MaxConcurrency > 0 {
+		globalConcurrencyLimiter := concurrency.NewLimiter("global", cfg.Server.MaxConcurrency)
+		handler = concurrency.Middleware("global", globalConcurrencyLimiter)(handler)
+	}
+
 	if cfg.Server.RateLimitRPS > 0 {
 		globalLimiter := ratelimit.NewTokenBucket("global", cfg.Server.RateLimitRPS, cfg.Server.RateLimitBurst)
 		routeResult.rateLimiters = append(routeResult.rateLimiters, globalLimiter)
@@ -84,6 +90,12 @@ func registerRoutes(mux *http.ServeMux, routes []config.RouteConfig) (*routeRegi
 
 		var routeHandler http.Handler = proxyHandler
 
+		if route.MaxConcurrency > 0 {
+			limitName := "route:" + route.ID
+			routeConcurrencyLimiter := concurrency.NewLimiter(limitName, route.MaxConcurrency)
+			routeHandler = concurrency.Middleware(limitName, routeConcurrencyLimiter)(routeHandler)
+		}
+
 		if route.RateLimitRPS > 0 {
 			limiterName := "route:" + route.ID
 			routeLimiter := ratelimit.NewTokenBucket(limiterName, route.RateLimitRPS, route.RateLimitBurst)
@@ -95,13 +107,14 @@ func registerRoutes(mux *http.ServeMux, routes []config.RouteConfig) (*routeRegi
 		prefix := route.Prefix
 
 		log.Printf(
-			"register route id=%s prefix=%s stripPrefix=%s target=%s rateLimitRPS=%d rateLimitBurst=%d",
+			"register route id=%s prefix=%s stripPrefix=%s target=%s rateLimitRPS=%d rateLimitBurst=%d maxConcurrency=%d",
 			route.ID,
 			prefix,
 			route.StripPrefix,
 			route.Target,
 			route.RateLimitRPS,
 			route.RateLimitBurst,
+			route.MaxConcurrency,
 		)
 
 		mux.Handle(prefix, routeHandler)

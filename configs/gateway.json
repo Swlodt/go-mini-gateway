@@ -1,7 +1,7 @@
 {
   "server": {
     "addr": ":9090",
-    "requestTimeout": "10s",
+    "requestTimeout": "3s",
     "shutdownTimeout": "10s",
     "rateLimitRPS":20,
     "rateLimitBurst":20,

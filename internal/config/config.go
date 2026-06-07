@@ -154,6 +154,9 @@ func validate(cfg *Config) error {
 	if err := validateRateLimit("server", cfg.Server.RateLimitRPS, cfg.Server.RateLimitBurst); err != nil {
 		return err
 	}
+	if err := validateMaxConcurrency("server", cfg.Server.MaxConcurrency); err != nil {
+		return err
+	}
 
 	if len(cfg.Routes) == 0 {
 		return fmt.Errorf("at least one route is required")
@@ -197,12 +200,13 @@ func validate(cfg *Config) error {
 		if err != nil {
 			return fmt.Errorf("routes[%d].target %q is invalid: %w", i, route.Target, err)
 		}
-
 		if targetURL.Scheme == "" || targetURL.Host == "" {
 			return fmt.Errorf("routes[%d].target %q must contain scheme and host", i, route.Target)
 		}
-
 		if err := validateRateLimit(fmt.Sprintf("route[%d]", i), route.RateLimitRPS, route.RateLimitBurst); err != nil {
+			return err
+		}
+		if err := validateMaxConcurrency(fmt.Sprintf("route[%d]", i), route.MaxConcurrency); err != nil {
 			return err
 		}
 	}
@@ -225,6 +229,16 @@ func validateRateLimit(scope string, rps int, burst int) error {
 	}
 	if burst > 100000 {
 		return fmt.Errorf("%s.rateLimitBurst is too large: %d", scope, burst)
+	}
+	return nil
+}
+
+func validateMaxConcurrency(scope string, maxConcurrency int) error {
+	if maxConcurrency < 0 {
+		return fmt.Errorf("%s.maxConcurrency cannot be negative", scope)
+	}
+	if maxConcurrency > 100000 {
+		return fmt.Errorf("%s.maxConcurrency is too large: %d", scope, maxConcurrency)
 	}
 	return nil
 }
