@@ -7,6 +7,7 @@ import (
 	"go-mini-gateway/internal/concurrency"
 	"go-mini-gateway/internal/config"
 	"go-mini-gateway/internal/health"
+	"go-mini-gateway/internal/metrics"
 	"go-mini-gateway/internal/proxy"
 	"go-mini-gateway/internal/ratelimit"
 	"log"
@@ -23,6 +24,7 @@ type Server struct {
 	healthCheckers           []*health.Checker
 	globalRateLimiter        *ratelimit.TokenBucket
 	globalConcurrencyLimiter *concurrency.Limiter
+	metricsRegistry          *metrics.Registry
 }
 
 type routeRegisterResult struct {
@@ -85,6 +87,8 @@ func New(cfg *config.Config) (*Server, error) {
 		handler = ratelimit.Middleware("global", globalLimiter)(handler)
 	}
 
+	metricsRegistry := metrics.NewRegistry()
+
 	srv := &Server{
 		routes:                   routeResult.routes,
 		proxyHandlers:            routeResult.proxyHandlers,
@@ -92,11 +96,12 @@ func New(cfg *config.Config) (*Server, error) {
 		healthCheckers:           routeResult.healthCheckers,
 		globalRateLimiter:        globalLimiter,
 		globalConcurrencyLimiter: globalConcurrencyLimiter,
+		metricsRegistry:          metricsRegistry,
 	}
 
 	srv.registerAdminRoutes(mux)
 
-	handler = accessLogMiddleware(handler)
+	handler = accessLogMiddleware(handler, metricsRegistry)
 
 	server := &http.Server{
 		Addr:              cfg.Addr(),
@@ -186,6 +191,8 @@ func registerRoutes(mux *http.ServeMux, routes []config.RouteConfig) (*routeRegi
 		}
 
 		prefix := route.Prefix
+
+		routeHandler = withRouteID(route.ID, routeHandler)
 
 		log.Printf(
 			"register route id=%s prefix=%s stripPrefix=%s target=%s rateLimitRPS=%d "+

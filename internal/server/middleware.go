@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"go-mini-gateway/internal/metrics"
 	"log"
 	"net/http"
 	"time"
@@ -13,6 +14,8 @@ type statusRecorder struct {
 	statusCode   int
 	bytesWritten int64
 	wroteHeader  bool
+
+	routeID string
 }
 
 func newStatusRecorder(w http.ResponseWriter) *statusRecorder {
@@ -66,7 +69,18 @@ func (r *statusRecorder) Unwrap() http.ResponseWriter {
 	return r.ResponseWriter
 }
 
-func accessLogMiddleware(next http.Handler) http.Handler {
+func (r *statusRecorder) SetRouteID(routeID string) {
+	if routeID == "" {
+		return
+	}
+	r.routeID = routeID
+}
+
+func (r *statusRecorder) RouteID() string {
+	return r.routeID
+}
+
+func accessLogMiddleware(next http.Handler, register *metrics.Registry) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 
@@ -74,13 +88,31 @@ func accessLogMiddleware(next http.Handler) http.Handler {
 		next.ServeHTTP(recorder, r)
 
 		cost := time.Since(start)
+		routeID := recorder.RouteID()
+		if routeID == "" {
+			routeID = routeIDFromRequest(r)
+		}
 
-		log.Printf("access method=%s path=%s query=%q status=%d bytes=%d cost=%s remote=%s user_agent=%q",
+		statusCode := recorder.StatusCode()
+		bytesWritten := recorder.BytesWritten()
+
+		if register != nil {
+			register.Record(metrics.Record{
+				RouteID:     routeID,
+				StatusCode:  statusCode,
+				ByteWritten: bytesWritten,
+				Latency:     cost,
+			})
+		}
+
+		log.Printf(
+			"access route=%s method=%s path=%s query=%q status=%d bytes=%d cost=%s remote=%s user_agent=%q",
+			routeID,
 			r.Method,
 			r.URL.Path,
 			r.URL.RawQuery,
-			recorder.StatusCode(),
-			recorder.BytesWritten(),
+			statusCode,
+			bytesWritten,
 			cost,
 			r.RemoteAddr,
 			r.UserAgent(),
