@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"go-mini-gateway/internal/config"
 	"go-mini-gateway/internal/proxy"
+	"go-mini-gateway/internal/ratelimit"
 	"log"
 	"net/http"
 	"strings"
@@ -15,6 +16,12 @@ import (
 type Server struct {
 	httpServer    *http.Server
 	proxyHandlers []*proxy.Handler
+	rateLimiters  []*ratelimit.TokenBucket
+}
+
+type routeRegisterResult struct {
+	proxyHandlers []*proxy.Handler
+	rateLimiters  []*ratelimit.TokenBucket
 }
 
 func New(cfg *config.Config) (*Server, error) {
@@ -29,7 +36,7 @@ func New(cfg *config.Config) (*Server, error) {
 	mux.HandleFunc("/health", handleHealth)
 	mux.HandleFunc("/version", handleVersion)
 
-	proxyHandlers, err := registerRoutes(mux, cfg.Routes)
+	routeResult, err := registerRoutes(mux, cfg.Routes)
 	if err != nil {
 		return nil, err
 	}
@@ -37,6 +44,13 @@ func New(cfg *config.Config) (*Server, error) {
 	var handler http.Handler = mux
 
 	handler = timeoutMiddleware(requestTimeout)(handler)
+
+	if cfg.Server.RateLimitRPS > 0 {
+		globalLimiter := ratelimit.NewTokenBucket("global", cfg.Server.RateLimitRPS, cfg.Server.RateLimitBurst)
+		routeResult.rateLimiters = append(routeResult.rateLimiters, globalLimiter)
+		handler = ratelimit.Middleware("global", globalLimiter)(handler)
+	}
+
 	handler = accessLogMiddleware(handler)
 
 	server := &http.Server{
@@ -47,12 +61,16 @@ func New(cfg *config.Config) (*Server, error) {
 
 	return &Server{
 		httpServer:    server,
-		proxyHandlers: proxyHandlers,
+		proxyHandlers: routeResult.proxyHandlers,
+		rateLimiters:  routeResult.rateLimiters,
 	}, nil
 }
 
-func registerRoutes(mux *http.ServeMux, routes []config.RouteConfig) ([]*proxy.Handler, error) {
-	proxyHandlers := make([]*proxy.Handler, 0, len(routes))
+func registerRoutes(mux *http.ServeMux, routes []config.RouteConfig) (*routeRegisterResult, error) {
+	result := &routeRegisterResult{
+		proxyHandlers: make([]*proxy.Handler, 0, len(routes)),
+		rateLimiters:  make([]*ratelimit.TokenBucket, 0),
+	}
 
 	for _, route := range routes {
 		proxyHandler, err := proxy.New(proxy.Options{
@@ -64,26 +82,38 @@ func registerRoutes(mux *http.ServeMux, routes []config.RouteConfig) ([]*proxy.H
 			return nil, fmt.Errorf("create proxy handler for route %q failed: %w", route.ID, err)
 		}
 
+		var routeHandler http.Handler = proxyHandler
+
+		if route.RateLimitRPS > 0 {
+			limiterName := "route:" + route.ID
+			routeLimiter := ratelimit.NewTokenBucket(limiterName, route.RateLimitRPS, route.RateLimitBurst)
+
+			result.rateLimiters = append(result.rateLimiters, routeLimiter)
+			routeHandler = ratelimit.Middleware(limiterName, routeLimiter)(routeHandler)
+		}
+
 		prefix := route.Prefix
 
 		log.Printf(
-			"register route id=%s prefix=%s stripPrefix=%s target=%s",
+			"register route id=%s prefix=%s stripPrefix=%s target=%s rateLimitRPS=%d rateLimitBurst=%d",
 			route.ID,
 			prefix,
 			route.StripPrefix,
 			route.Target,
+			route.RateLimitRPS,
+			route.RateLimitBurst,
 		)
 
-		mux.Handle(prefix, proxyHandler)
+		mux.Handle(prefix, routeHandler)
 		// 让 /api 也能匹配，而不是只匹配 /api/
 		exactPath := strings.TrimSuffix(prefix, "/")
 		if exactPath != "" && exactPath != prefix {
-			mux.Handle(exactPath, proxyHandler)
+			mux.Handle(exactPath, routeHandler)
 		}
 
-		proxyHandlers = append(proxyHandlers, proxyHandler)
+		result.proxyHandlers = append(result.proxyHandlers, proxyHandler)
 	}
-	return proxyHandlers, nil
+	return result, nil
 }
 
 func (s *Server) Start() error {
@@ -98,19 +128,24 @@ func (s *Server) Start() error {
 func (s *Server) Shutdown(ctx context.Context) error {
 	log.Printf("gateway shutting down")
 	err := s.httpServer.Shutdown(ctx)
-	for _, proxyHandler := range s.proxyHandlers {
-		proxyHandler.CloseIdleConnections()
-	}
+	s.CloseResource()
 	return err
 }
 
 func (s *Server) Close() error {
 	log.Printf("gateway force closing")
 	err := s.httpServer.Close()
+	s.CloseResource()
+	return err
+}
+
+func (s *Server) CloseResource() {
 	for _, proxyHandler := range s.proxyHandlers {
 		proxyHandler.CloseIdleConnections()
 	}
-	return err
+	for _, limiter := range s.rateLimiters {
+		limiter.Close()
+	}
 }
 
 func handlePing(w http.ResponseWriter, r *http.Request) {

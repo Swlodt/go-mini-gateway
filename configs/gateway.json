@@ -2,20 +2,28 @@
   "server": {
     "addr": ":9090",
     "requestTimeout": "10s",
-    "shutdownTimeout": "10s"
+    "shutdownTimeout": "10s",
+    "rateLimitRPS":20,
+    "rateLimitBurst":20,
+    "maxConcurrency": 100
   },
   "routes": [
     {
       "id": "demo",
       "prefix": "/api/",
       "stripPrefix": "/api",
-      "target": "http://localhost:8081"
+      "target": "http://localhost:8081",
+      "rateLimitRPS":10,
+      "rateLimitBurst":10,
+      "maxConcurrency": 2
     },
     {
       "id": "backend2",
       "prefix": "/b2/",
       "stripPrefix": "/b2",
-      "target": "http://localhost:8082"
+      "target": "http://localhost:8082",
+      "rateLimitRPS":5,
+      "rateLimitBurst":5
     }
   ]
 }

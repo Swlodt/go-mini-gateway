@@ -24,13 +24,19 @@ type ServerConfig struct {
 	Addr            string `json:"addr"`
 	RequestTimeout  string `json:"requestTimeout"`
 	ShutdownTimeout string `json:"shutdownTimeout"`
+	RateLimitRPS    int    `json:"rateLimitRPS"`
+	RateLimitBurst  int    `json:"rateLimitBurst"`
+	MaxConcurrency  int    `json:"maxConcurrency"`
 }
 
 type RouteConfig struct {
-	ID          string `json:"id"`
-	Prefix      string `json:"prefix"`
-	StripPrefix string `json:"StripPrefix"`
-	Target      string `json:"target"`
+	ID             string `json:"id"`
+	Prefix         string `json:"prefix"`
+	StripPrefix    string `json:"StripPrefix"`
+	Target         string `json:"target"`
+	RateLimitRPS   int    `json:"rateLimitRPS"`
+	RateLimitBurst int    `json:"rateLimitBurst"`
+	MaxConcurrency int    `json:"maxConcurrency"`
 }
 
 func (c *Config) Addr() string {
@@ -91,11 +97,19 @@ func normalize(cfg *Config) {
 	if cfg.Server.ShutdownTimeout == "" {
 		cfg.Server.ShutdownTimeout = defaultShutdownTimeout.String()
 	}
+	if cfg.Server.RateLimitRPS > 0 && cfg.Server.RateLimitBurst <= 0 {
+		cfg.Server.RateLimitBurst = cfg.Server.RateLimitRPS
+	}
+
 	for i := range cfg.Routes {
 		cfg.Routes[i].ID = strings.TrimSpace(cfg.Routes[i].ID)
 		cfg.Routes[i].Prefix = normalizePrefix(cfg.Routes[i].Prefix)
 		cfg.Routes[i].StripPrefix = normalizeStripPrefix(cfg.Routes[i].StripPrefix)
 		cfg.Routes[i].Target = strings.TrimRight(strings.TrimSpace(cfg.Routes[i].Target), "/")
+
+		if cfg.Routes[i].RateLimitRPS > 0 && cfg.Routes[i].RateLimitBurst <= 0 {
+			cfg.Routes[i].RateLimitBurst = cfg.Routes[i].RateLimitRPS
+		}
 	}
 }
 
@@ -135,6 +149,9 @@ func validate(cfg *Config) error {
 		return err
 	}
 	if _, err := cfg.ShutdownTimeoutDuration(); err != nil {
+		return err
+	}
+	if err := validateRateLimit("server", cfg.Server.RateLimitRPS, cfg.Server.RateLimitBurst); err != nil {
 		return err
 	}
 
@@ -184,7 +201,30 @@ func validate(cfg *Config) error {
 		if targetURL.Scheme == "" || targetURL.Host == "" {
 			return fmt.Errorf("routes[%d].target %q must contain scheme and host", i, route.Target)
 		}
+
+		if err := validateRateLimit(fmt.Sprintf("route[%d]", i), route.RateLimitRPS, route.RateLimitBurst); err != nil {
+			return err
+		}
 	}
 
+	return nil
+}
+
+func validateRateLimit(scope string, rps int, burst int) error {
+	if rps < 0 {
+		return fmt.Errorf("%s.rateLimitRPS limit cannot be negative", scope)
+	}
+	if burst < 0 {
+		return fmt.Errorf("%s.rateLimitBurst limit cannot be negative", scope)
+	}
+	if rps == 0 && burst > 0 {
+		return fmt.Errorf("%s.rateLimitBurst requires rateLimitRPS > 0", scope)
+	}
+	if rps > 100000 {
+		return fmt.Errorf("%s.rateLimitRPS is too large: %d", scope, rps)
+	}
+	if burst > 100000 {
+		return fmt.Errorf("%s.rateLimitBurst is too large: %d", scope, burst)
+	}
 	return nil
 }
