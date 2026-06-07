@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"go-mini-gateway/internal/config"
@@ -12,7 +13,8 @@ import (
 )
 
 type Server struct {
-	httpServer *http.Server
+	httpServer    *http.Server
+	proxyHandlers []*proxy.Handler
 }
 
 func New(cfg *config.Config) (*Server, error) {
@@ -27,7 +29,8 @@ func New(cfg *config.Config) (*Server, error) {
 	mux.HandleFunc("/health", handleHealth)
 	mux.HandleFunc("/version", handleVersion)
 
-	if err := registerRoutes(mux, cfg.Routes); err != nil {
+	proxyHandlers, err := registerRoutes(mux, cfg.Routes)
+	if err != nil {
 		return nil, err
 	}
 
@@ -43,11 +46,14 @@ func New(cfg *config.Config) (*Server, error) {
 	}
 
 	return &Server{
-		httpServer: server,
+		httpServer:    server,
+		proxyHandlers: proxyHandlers,
 	}, nil
 }
 
-func registerRoutes(mux *http.ServeMux, routes []config.RouteConfig) error {
+func registerRoutes(mux *http.ServeMux, routes []config.RouteConfig) ([]*proxy.Handler, error) {
+	proxyHandlers := make([]*proxy.Handler, 0, len(routes))
+
 	for _, route := range routes {
 		proxyHandler, err := proxy.New(proxy.Options{
 			RouteID:     route.ID,
@@ -55,7 +61,7 @@ func registerRoutes(mux *http.ServeMux, routes []config.RouteConfig) error {
 			StripPrefix: route.StripPrefix,
 		})
 		if err != nil {
-			return fmt.Errorf("create proxy handler for route %q failed: %w", route.ID, err)
+			return nil, fmt.Errorf("create proxy handler for route %q failed: %w", route.ID, err)
 		}
 
 		prefix := route.Prefix
@@ -63,20 +69,21 @@ func registerRoutes(mux *http.ServeMux, routes []config.RouteConfig) error {
 		log.Printf(
 			"register route id=%s prefix=%s stripPrefix=%s target=%s",
 			route.ID,
-			route.Prefix,
+			prefix,
 			route.StripPrefix,
 			route.Target,
 		)
 
 		mux.Handle(prefix, proxyHandler)
-
 		// 让 /api 也能匹配，而不是只匹配 /api/
 		exactPath := strings.TrimSuffix(prefix, "/")
 		if exactPath != "" && exactPath != prefix {
 			mux.Handle(exactPath, proxyHandler)
 		}
+
+		proxyHandlers = append(proxyHandlers, proxyHandler)
 	}
-	return nil
+	return proxyHandlers, nil
 }
 
 func (s *Server) Start() error {
@@ -86,6 +93,24 @@ func (s *Server) Start() error {
 		return err
 	}
 	return nil
+}
+
+func (s *Server) Shutdown(ctx context.Context) error {
+	log.Printf("gateway shutting down")
+	err := s.httpServer.Shutdown(ctx)
+	for _, proxyHandler := range s.proxyHandlers {
+		proxyHandler.CloseIdleConnections()
+	}
+	return err
+}
+
+func (s *Server) Close() error {
+	log.Printf("gateway force closing")
+	err := s.httpServer.Close()
+	for _, proxyHandler := range s.proxyHandlers {
+		proxyHandler.CloseIdleConnections()
+	}
+	return err
 }
 
 func handlePing(w http.ResponseWriter, r *http.Request) {

@@ -10,8 +10,9 @@ import (
 )
 
 const (
-	defaultAddr           = ":8080"
-	defaultRequestTimeout = 3 * time.Second
+	defaultAddr            = ":8080"
+	defaultRequestTimeout  = 3 * time.Second
+	defaultShutdownTimeout = 10 * time.Second
 )
 
 type Config struct {
@@ -20,8 +21,9 @@ type Config struct {
 }
 
 type ServerConfig struct {
-	Addr           string `json:"addr"`
-	RequestTimeout string `json:"requestTimeout"`
+	Addr            string `json:"addr"`
+	RequestTimeout  string `json:"requestTimeout"`
+	ShutdownTimeout string `json:"shutdownTimeout"`
 }
 
 type RouteConfig struct {
@@ -45,6 +47,17 @@ func (c *Config) RequestTimeoutDuration() (time.Duration, error) {
 	timeout, err := time.ParseDuration(c.Server.RequestTimeout)
 	if err != nil {
 		return 0, fmt.Errorf("invalid server.requestTimeout %q: %w", c.Server.RequestTimeout, err)
+	}
+	return timeout, nil
+}
+
+func (c *Config) ShutdownTimeoutDuration() (time.Duration, error) {
+	if c.Server.ShutdownTimeout == "" {
+		return defaultShutdownTimeout, nil
+	}
+	timeout, err := time.ParseDuration(c.Server.ShutdownTimeout)
+	if err != nil {
+		return 0, fmt.Errorf("invalid server.shutdownTimeout %q: %w", c.Server.ShutdownTimeout, err)
 	}
 	return timeout, nil
 }
@@ -74,6 +87,9 @@ func normalize(cfg *Config) {
 	}
 	if cfg.Server.RequestTimeout == "" {
 		cfg.Server.RequestTimeout = defaultRequestTimeout.String()
+	}
+	if cfg.Server.ShutdownTimeout == "" {
+		cfg.Server.ShutdownTimeout = defaultShutdownTimeout.String()
 	}
 	for i := range cfg.Routes {
 		cfg.Routes[i].ID = strings.TrimSpace(cfg.Routes[i].ID)
@@ -118,6 +134,10 @@ func validate(cfg *Config) error {
 	if _, err := cfg.RequestTimeoutDuration(); err != nil {
 		return err
 	}
+	if _, err := cfg.ShutdownTimeoutDuration(); err != nil {
+		return err
+	}
+
 	if len(cfg.Routes) == 0 {
 		return fmt.Errorf("at least one route is required")
 	}

@@ -27,6 +27,7 @@ type Handler struct {
 	routeID      string
 	stripPrefix  string
 	target       *url.URL
+	transport    *http.Transport
 	reverseProxy *httputil.ReverseProxy
 }
 
@@ -53,10 +54,11 @@ func New(options Options) (*Handler, error) {
 		routeID:     options.RouteID,
 		stripPrefix: options.StripPrefix,
 		target:      targetURL,
+		transport:   transport,
 	}
 
 	rp := &httputil.ReverseProxy{
-		Transport: transport,
+		Transport: h.transport,
 
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			h.rewriteRequest(pr)
@@ -70,7 +72,14 @@ func New(options Options) (*Handler, error) {
 
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
 			statusCode := statusCodeFromProxyError(err)
-			log.Printf("proxy backend request failed: route=%s method=%s path=%s status==%d err=%v", h.routeID, r.Method, r.URL.Path, statusCode, err)
+			log.Printf(
+				"proxy backend request failed: route=%s method=%s path=%s status==%d err=%v",
+				h.routeID,
+				r.Method,
+				r.URL.Path,
+				statusCode,
+				err,
+			)
 			http.Error(w, http.StatusText(statusCode), statusCode)
 		},
 	}
@@ -113,6 +122,13 @@ func (h *Handler) rewriteRequest(pr *httputil.ProxyRequest) {
 		traceID = fmt.Sprintf("trace-%d", time.Now().UnixNano())
 	}
 	pr.Out.Header.Set("X-Trace-ID", traceID)
+}
+
+func (h *Handler) CloseIdleConnections() {
+	if h == nil || h.transport == nil {
+		return
+	}
+	h.transport.CloseIdleConnections()
 }
 
 func statusCodeFromProxyError(err error) int {
