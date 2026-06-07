@@ -3,9 +3,11 @@ package server
 import (
 	"errors"
 	"fmt"
+	"go-mini-gateway/internal/config"
 	"go-mini-gateway/internal/proxy"
 	"log"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -13,29 +15,68 @@ type Server struct {
 	httpServer *http.Server
 }
 
-func New(addr string) (*Server, error) {
+func New(cfg *config.Config) (*Server, error) {
+	requestTimeout, err := cfg.RequestTimeoutDuration()
+	if err != nil {
+		return nil, err
+	}
+
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("/ping", handlePing)
 	mux.HandleFunc("/health", handleHealth)
 	mux.HandleFunc("/version", handleVersion)
 
-	proxyHandler, err := proxy.New("http://127.0.0.1:8081")
-	if err != nil {
+	if err := registerRoutes(mux, cfg.Routes); err != nil {
 		return nil, err
 	}
 
-	mux.Handle("/api/", proxyHandler)
+	var handler http.Handler = mux
+
+	handler = timeoutMiddleware(requestTimeout)(handler)
+	handler = accessLogMiddleware(handler)
 
 	server := &http.Server{
-		Addr:              addr,
-		Handler:           loggingMiddleware(mux),
+		Addr:              cfg.Addr(),
+		Handler:           handler,
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
 	return &Server{
 		httpServer: server,
 	}, nil
+}
+
+func registerRoutes(mux *http.ServeMux, routes []config.RouteConfig) error {
+	for _, route := range routes {
+		proxyHandler, err := proxy.New(proxy.Options{
+			RouteID:     route.ID,
+			Target:      route.Target,
+			StripPrefix: route.StripPrefix,
+		})
+		if err != nil {
+			return fmt.Errorf("create proxy handler for route %q failed: %w", route.ID, err)
+		}
+
+		prefix := route.Prefix
+
+		log.Printf(
+			"register route id=%s prefix=%s stripPrefix=%s target=%s",
+			route.ID,
+			route.Prefix,
+			route.StripPrefix,
+			route.Target,
+		)
+
+		mux.Handle(prefix, proxyHandler)
+
+		// 让 /api 也能匹配，而不是只匹配 /api/
+		exactPath := strings.TrimSuffix(prefix, "/")
+		if exactPath != "" && exactPath != prefix {
+			mux.Handle(exactPath, proxyHandler)
+		}
+	}
+	return nil
 }
 
 func (s *Server) Start() error {
@@ -68,20 +109,4 @@ func handleVersion(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 	}
 	_, _ = w.Write([]byte("go-mini-gateway v0.1.0"))
-}
-
-func loggingMiddleware(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		start := time.Now()
-		next.ServeHTTP(w, r)
-		duration := time.Since(start)
-		log.Printf("%s %s cost=%s", r.Method, r.URL.Path, duration)
-	})
-}
-
-func (s *Server) Addr() string {
-	if s == nil || s.httpServer == nil {
-		return ""
-	}
-	return fmt.Sprint(s.httpServer.Addr)
 }

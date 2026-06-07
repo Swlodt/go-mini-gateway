@@ -1,0 +1,20 @@
+{
+  "server": {
+    "addr": ":9090",
+    "requestTimeout": "3s"
+  },
+  "routes": [
+    {
+      "id": "demo",
+      "prefix": "/api/",
+      "stripPrefix": "/api",
+      "target": "http://localhost:8081"
+    },
+    {
+      "id": "backend2",
+      "prefix": "/b2/",
+      "stripPrefix": "/b2",
+      "target": "http://localhost:8082"
+    }
+  ]
+}
