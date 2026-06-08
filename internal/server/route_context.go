@@ -52,7 +52,7 @@ func routeIDFromRequest(r *http.Request) string {
 	path := r.URL.Path
 
 	switch {
-	case strings.HasPrefix(path, "/admin/"):
+	case strings.HasPrefix(path, "/admin/") || path == "/metrics":
 		return "admin"
 	case path == "/ping" || path == "/health" || path == "/version":
 		return "system"

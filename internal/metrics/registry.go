@@ -31,9 +31,10 @@ type Record struct {
 }
 
 type Snapshot struct {
-	Uptime string                    `json:"uptime"`
-	Total  BucketSnapshot            `json:"total"`
-	Routes map[string]BucketSnapshot `json:"routes"`
+	Uptime        string                    `json:"uptime"`
+	UptimeSeconds float64                   `json:"UptimeSeconds"`
+	Total         BucketSnapshot            `json:"total"`
+	Routes        map[string]BucketSnapshot `json:"routes"`
 }
 
 type BucketSnapshot struct {
@@ -118,10 +119,13 @@ func (r *Registry) Snapshot() Snapshot {
 		routes[routeID] = snapshotBucket(r.routes[routeID])
 	}
 
+	uptime := time.Since(r.startTime)
+
 	return Snapshot{
-		Uptime: time.Since(r.startTime).String(),
-		Total:  snapshotBucket(r.total),
-		Routes: routes,
+		Uptime:        uptime.String(),
+		UptimeSeconds: uptime.Seconds(),
+		Total:         snapshotBucket(r.total),
+		Routes:        routes,
 	}
 }
 

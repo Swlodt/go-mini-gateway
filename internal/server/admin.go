@@ -56,6 +56,8 @@ func (s *Server) registerAdminRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/admin/health", s.handleAdminHealth)
 	mux.HandleFunc("/admin/stats", s.handleAdminStats)
 	mux.HandleFunc("/admin/metrics", s.handleAdminMetrics)
+
+	mux.HandleFunc("/metrics", s.handlePrometheusMetrics)
 }
 
 func (s *Server) handleAdminRoutes(w http.ResponseWriter, r *http.Request) {
@@ -167,6 +169,22 @@ func (s *Server) handleAdminMetrics(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, s.metricsRegistry.Snapshot())
+}
+
+func (s *Server) handlePrometheusMetrics(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+
+	if s.metricsRegistry == nil {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
+	_, _ = w.Write([]byte(s.metricsRegistry.PrometheusText()))
 }
 
 func writeJSON(w http.ResponseWriter, statusCode int, value any) {
