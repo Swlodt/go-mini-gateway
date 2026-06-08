@@ -52,12 +52,19 @@ type routeStatusDTO struct {
 }
 
 func (s *Server) registerAdminRoutes(mux *http.ServeMux) {
-	mux.HandleFunc("/admin/routes", s.handleAdminRoutes)
-	mux.HandleFunc("/admin/health", s.handleAdminHealth)
-	mux.HandleFunc("/admin/stats", s.handleAdminStats)
-	mux.HandleFunc("/admin/metrics", s.handleAdminMetrics)
+	if s.adminEnable {
+		mux.Handle("/admin/routes", s.adminAuthMiddleware(http.HandlerFunc(s.handleAdminRoutes)))
+		mux.Handle("/admin/health", s.adminAuthMiddleware(http.HandlerFunc(s.handleAdminHealth)))
+		mux.Handle("/admin/stats", s.adminAuthMiddleware(http.HandlerFunc(s.handleAdminStats)))
+		mux.Handle("/admin/metrics", s.adminAuthMiddleware(http.HandlerFunc(s.handleAdminMetrics)))
+	}
 
-	mux.HandleFunc("/metrics", s.handlePrometheusMetrics)
+	metricsHandler := http.HandlerFunc(s.handlePrometheusMetrics)
+	if s.metricsRequireToken {
+		mux.Handle("/metrics", s.adminAuthMiddleware(metricsHandler))
+		return
+	}
+	mux.Handle("/metrics", metricsHandler)
 }
 
 func (s *Server) handleAdminRoutes(w http.ResponseWriter, r *http.Request) {

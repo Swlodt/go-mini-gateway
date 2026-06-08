@@ -17,6 +17,7 @@ const (
 
 type Config struct {
 	Server ServerConfig  `json:"server"`
+	Admin  AdminConfig   `json:"admin"`
 	Routes []RouteConfig `json:"routes"`
 }
 
@@ -27,6 +28,12 @@ type ServerConfig struct {
 	RateLimitRPS    int    `json:"rateLimitRPS"`
 	RateLimitBurst  int    `json:"rateLimitBurst"`
 	MaxConcurrency  int    `json:"maxConcurrency"`
+}
+
+type AdminConfig struct {
+	Enable              bool   `json:"enable"`
+	Token               string `json:"token"`
+	MetricsRequireToken bool   `json:"metricsRequireToken"`
 }
 
 type RouteConfig struct {
@@ -181,6 +188,9 @@ func validate(cfg *Config) error {
 	if err := validateMaxConcurrency("server", cfg.Server.MaxConcurrency); err != nil {
 		return err
 	}
+	if err := validateAdmin(cfg); err != nil {
+		return err
+	}
 
 	if len(cfg.Routes) == 0 {
 		return fmt.Errorf("at least one route is required")
@@ -303,6 +313,20 @@ func validateHealthCheck(scope string, healthCheck HealthCheckConfig) error {
 			interval,
 		)
 	}
+	return nil
+}
+
+func validateAdmin(cfg *Config) error {
+	cfg.Admin.Token = strings.TrimSpace(cfg.Admin.Token)
+
+	if cfg.Admin.Enable && cfg.Admin.Token == "" {
+		return fmt.Errorf("admin.token is required when admin is enabled")
+	}
+
+	if cfg.Admin.MetricsRequireToken && cfg.Admin.Token == "" {
+		return fmt.Errorf("admin.token is required when metricsRequireToken is enabled")
+	}
+
 	return nil
 }
 

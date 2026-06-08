@@ -25,6 +25,10 @@ type Server struct {
 	globalRateLimiter        *ratelimit.TokenBucket
 	globalConcurrencyLimiter *concurrency.Limiter
 	metricsRegistry          *metrics.Registry
+
+	adminEnable         bool
+	adminToken          string
+	metricsRequireToken bool
 }
 
 type routeRegisterResult struct {
@@ -97,6 +101,9 @@ func New(cfg *config.Config) (*Server, error) {
 		globalRateLimiter:        globalLimiter,
 		globalConcurrencyLimiter: globalConcurrencyLimiter,
 		metricsRegistry:          metricsRegistry,
+		adminEnable:              cfg.Admin.Enable,
+		adminToken:               cfg.Admin.Token,
+		metricsRequireToken:      cfg.Admin.MetricsRequireToken,
 	}
 
 	srv.registerAdminRoutes(mux)

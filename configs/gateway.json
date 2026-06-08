@@ -7,6 +7,11 @@
     "rateLimitBurst":20,
     "maxConcurrency": 100
   },
+  "admin": {
+    "enable": true,
+    "token": "dev-secret",
+    "metricsRequireToken": false
+  },
   "routes": [
     {
       "id": "demo",
