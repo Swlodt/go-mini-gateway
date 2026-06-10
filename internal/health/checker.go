@@ -214,7 +214,7 @@ func (c *Checker) update(healthy bool, reason string) {
 	}
 }
 
-func (c *Checker) SnapShot() Snapshot {
+func (c *Checker) Snapshot() Snapshot {
 	if c == nil {
 		return Snapshot{
 			Checked: true,

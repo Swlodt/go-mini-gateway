@@ -40,7 +40,7 @@ func (r *Registry) PrometheusText() string {
 	for status, value := range snapshot.Total.StatusCodes {
 		_, _ = fmt.Fprintf(
 			&b,
-			"gateway_http_status_requests_total{status=%q} %d\n",
+			"gateway_http_status_requests_total{status=\"%s\"} %d\n",
 			escapeLabelValue(status),
 			value,
 		)
@@ -52,7 +52,7 @@ func (r *Registry) PrometheusText() string {
 	for routeID, bucket := range snapshot.Routes {
 		_, _ = fmt.Fprintf(
 			&b,
-			"gateway_route_http_requests_total{route=%q} %d\n",
+			"gateway_route_http_requests_total{route=\"%s\"} %d\n",
 			escapeLabelValue(routeID),
 			bucket.Requests,
 		)
@@ -64,7 +64,7 @@ func (r *Registry) PrometheusText() string {
 	for routeID, bucket := range snapshot.Routes {
 		_, _ = fmt.Fprintf(
 			&b,
-			"gateway_route_http_bytes_written_total{route=%q} %d\n",
+			"gateway_route_http_bytes_written_total{route=\"%s\"} %d\n",
 			escapeLabelValue(routeID),
 			bucket.BytesWritten,
 		)
@@ -77,7 +77,7 @@ func (r *Registry) PrometheusText() string {
 		for status, value := range bucket.StatusCodes {
 			_, _ = fmt.Fprintf(
 				&b,
-				"gateway_route_http_status_requests_total{route=%q,status=%q} %d\n",
+				"gateway_route_http_status_requests_total{route=\"%s\",status=\"%s\"} %d\n",
 				escapeLabelValue(routeID),
 				escapeLabelValue(status),
 				value,
@@ -91,7 +91,7 @@ func (r *Registry) PrometheusText() string {
 	for routeID, bucket := range snapshot.Routes {
 		_, _ = fmt.Fprintf(
 			&b,
-			"gateway_route_http_request_duration_avg_milliseconds{route=%q} %.6f\n",
+			"gateway_route_http_request_duration_avg_milliseconds{route=\"%s\"} %.6f\n",
 			escapeLabelValue(routeID),
 			bucket.AvgLatencyMs,
 		)
@@ -103,7 +103,7 @@ func (r *Registry) PrometheusText() string {
 	for routeID, bucket := range snapshot.Routes {
 		_, _ = fmt.Fprintf(
 			&b,
-			"gateway_route_http_request_duration_max_milliseconds{route=%q} %.6f\n",
+			"gateway_route_http_request_duration_max_milliseconds{route=\"%s\"} %.6f\n",
 			escapeLabelValue(routeID),
 			bucket.MaxLatencyMs,
 		)

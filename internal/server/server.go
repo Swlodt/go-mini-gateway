@@ -17,7 +17,9 @@ import (
 )
 
 type Server struct {
-	httpServer               *http.Server
+	httpServer      *http.Server
+	adminHTTPServer *http.Server
+
 	routes                   []*routeRuntime
 	proxyHandlers            []*proxy.Handler
 	rateLimiters             []*ratelimit.TokenBucket
@@ -26,9 +28,14 @@ type Server struct {
 	globalConcurrencyLimiter *concurrency.Limiter
 	metricsRegistry          *metrics.Registry
 
-	adminEnable         bool
+	adminEnabled        bool
 	adminToken          string
 	metricsRequireToken bool
+}
+
+type httpServerTarget struct {
+	name   string
+	server *http.Server
 }
 
 type routeRegisterResult struct {
@@ -62,61 +69,85 @@ func New(cfg *config.Config) (*Server, error) {
 		return nil, err
 	}
 
-	mux := http.NewServeMux()
+	metricsRegistry := metrics.NewRegistry()
 
-	mux.HandleFunc("/ping", handlePing)
-	mux.HandleFunc("/health", handleHealth)
-	mux.HandleFunc("/version", handleVersion)
+	mainMux := http.NewServeMux()
 
-	routeResult, err := registerRoutes(mux, cfg.Routes)
+	mainMux.HandleFunc("/ping", handlePing)
+	mainMux.HandleFunc("/health", handleHealth)
+	mainMux.HandleFunc("/version", handleVersion)
+
+	routeResult, err := registerRoutes(mainMux, cfg.Routes)
 	if err != nil {
 		return nil, err
 	}
 
-	var handler http.Handler = mux
+	var mainHandler http.Handler = mainMux
 
-	handler = timeoutMiddleware(requestTimeout)(handler)
+	mainHandler = timeoutMiddleware(requestTimeout)(mainHandler)
 
 	var globalConcurrencyLimiter *concurrency.Limiter
-	var globalLimiter *ratelimit.TokenBucket
+	var globalRateLimiter *ratelimit.TokenBucket
 
 	if cfg.Server.MaxConcurrency > 0 {
-		globalConcurrencyLimiter = concurrency.NewLimiter("global", cfg.Server.MaxConcurrency)
-		handler = concurrency.Middleware("global", globalConcurrencyLimiter)(handler)
+		globalConcurrencyLimiter = concurrency.NewLimiter(
+			"global",
+			cfg.Server.MaxConcurrency,
+		)
+
+		mainHandler = concurrency.Middleware("global", globalConcurrencyLimiter)(mainHandler)
 	}
 
 	if cfg.Server.RateLimitRPS > 0 {
-		globalLimiter = ratelimit.NewTokenBucket("global", cfg.Server.RateLimitRPS, cfg.Server.RateLimitBurst)
-		routeResult.rateLimiters = append(routeResult.rateLimiters, globalLimiter)
-		handler = ratelimit.Middleware("global", globalLimiter)(handler)
+		globalRateLimiter = ratelimit.NewTokenBucket(
+			"global",
+			cfg.Server.RateLimitRPS,
+			cfg.Server.RateLimitBurst,
+		)
+
+		routeResult.rateLimiters = append(routeResult.rateLimiters, globalRateLimiter)
+
+		mainHandler = ratelimit.Middleware("global", globalRateLimiter)(mainHandler)
 	}
 
-	metricsRegistry := metrics.NewRegistry()
+	mainHandler = accessLogMiddleware(mainHandler, metricsRegistry)
 
 	srv := &Server{
 		routes:                   routeResult.routes,
 		proxyHandlers:            routeResult.proxyHandlers,
 		rateLimiters:             routeResult.rateLimiters,
 		healthCheckers:           routeResult.healthCheckers,
-		globalRateLimiter:        globalLimiter,
+		globalRateLimiter:        globalRateLimiter,
 		globalConcurrencyLimiter: globalConcurrencyLimiter,
 		metricsRegistry:          metricsRegistry,
-		adminEnable:              cfg.Admin.Enable,
-		adminToken:               cfg.Admin.Token,
-		metricsRequireToken:      cfg.Admin.MetricsRequireToken,
+
+		adminEnabled:        cfg.Admin.Enabled,
+		adminToken:          cfg.Admin.Token,
+		metricsRequireToken: cfg.Admin.MetricsRequireToken,
 	}
 
-	srv.registerAdminRoutes(mux)
-
-	handler = accessLogMiddleware(handler, metricsRegistry)
-
-	server := &http.Server{
+	srv.httpServer = &http.Server{
 		Addr:              cfg.Addr(),
-		Handler:           handler,
+		Handler:           mainHandler,
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
-	srv.httpServer = server
+	if cfg.Admin.Enabled {
+		adminMux := http.NewServeMux()
+		srv.registerAdminRoutes(adminMux)
+
+		var adminHandler http.Handler = adminMux
+
+		// 管理接口不走业务全局限流、不走业务全局并发限制。
+		// 但仍然记录访问日志和 metrics。
+		adminHandler = accessLogMiddleware(adminHandler, metricsRegistry)
+
+		srv.adminHTTPServer = &http.Server{
+			Addr:              cfg.Admin.Addr,
+			Handler:           adminHandler,
+			ReadHeaderTimeout: 5 * time.Second,
+		}
+	}
 
 	return srv, nil
 }
@@ -229,26 +260,81 @@ func registerRoutes(mux *http.ServeMux, routes []config.RouteConfig) (*routeRegi
 }
 
 func (s *Server) Start() error {
-	log.Printf("Gateway listening on %s", s.httpServer.Addr)
-	err := s.httpServer.ListenAndServe()
-	if err != nil && !errors.Is(err, http.ErrServerClosed) {
-		return err
+	servers := s.activeHTTPServers()
+
+	errCh := make(chan error, len(servers))
+
+	for _, target := range servers {
+		target := target
+
+		go func() {
+			log.Printf("%s server listening on %s", target.name, target.server.Addr)
+
+			err := target.server.ListenAndServe()
+			if err != nil && !errors.Is(err, http.ErrServerClosed) {
+				errCh <- fmt.Errorf("%s server stopped with error: %w", target.name, err)
+				return
+			}
+
+			errCh <- nil
+		}()
 	}
+
+	for range servers {
+		if err := <-errCh; err != nil {
+			return err
+		}
+	}
+
 	return nil
 }
 
 func (s *Server) Shutdown(ctx context.Context) error {
 	log.Printf("gateway shutting down")
-	err := s.httpServer.Shutdown(ctx)
+
+	servers := s.activeHTTPServers()
+	errCh := make(chan error, len(servers))
+
+	for _, target := range servers {
+		target := target
+
+		go func() {
+			if err := target.server.Shutdown(ctx); err != nil {
+				errCh <- fmt.Errorf("%s server shutdown failed: %w", target.name, err)
+				return
+			}
+
+			errCh <- nil
+		}()
+	}
+
+	var result error
+
+	for range servers {
+		result = errors.Join(result, <-errCh)
+	}
+
 	s.CloseResource()
-	return err
+
+	return result
 }
 
 func (s *Server) Close() error {
 	log.Printf("gateway force closing")
-	err := s.httpServer.Close()
+
+	servers := s.activeHTTPServers()
+
+	var result error
+
+	for _, target := range servers {
+		if err := target.server.Close(); err != nil {
+			result = errors.Join(result, fmt.Errorf("%s server close failed: %w", target.name, err))
+		}
+	}
+
 	s.CloseResource()
-	return err
+
+	return result
 }
 
 func (s *Server) CloseResource() {
@@ -261,6 +347,24 @@ func (s *Server) CloseResource() {
 	for _, checker := range s.healthCheckers {
 		checker.Close()
 	}
+}
+
+func (s *Server) activeHTTPServers() []httpServerTarget {
+	servers := []httpServerTarget{
+		{
+			name:   "main",
+			server: s.httpServer,
+		},
+	}
+
+	if s.adminHTTPServer != nil {
+		servers = append(servers, httpServerTarget{
+			name:   "admin",
+			server: s.adminHTTPServer,
+		})
+	}
+
+	return servers
 }
 
 func handlePing(w http.ResponseWriter, r *http.Request) {

@@ -11,6 +11,7 @@ import (
 
 const (
 	defaultAddr            = ":8080"
+	defaultAdminAddr       = "127.0.0.1:9001"
 	defaultRequestTimeout  = 3 * time.Second
 	defaultShutdownTimeout = 10 * time.Second
 )
@@ -31,7 +32,8 @@ type ServerConfig struct {
 }
 
 type AdminConfig struct {
-	Enable              bool   `json:"enable"`
+	Enabled             bool   `json:"enabled"`
+	Addr                string `json:"addr"`
 	Token               string `json:"token"`
 	MetricsRequireToken bool   `json:"metricsRequireToken"`
 }
@@ -88,9 +90,14 @@ func Load(path string) (*Config, error) {
 	if err != nil {
 		return nil, fmt.Errorf("read config file %q failed: %w", path, err)
 	}
+
 	var cfg Config
 	if err := json.Unmarshal(data, &cfg); err != nil {
 		return nil, fmt.Errorf("parse config file %q failed: %w", path, err)
+	}
+
+	if err := expandConfigEnv(&cfg); err != nil {
+		return nil, fmt.Errorf("expand config env failed: %w", err)
 	}
 
 	normalize(&cfg)
@@ -114,6 +121,12 @@ func normalize(cfg *Config) {
 	}
 	if cfg.Server.RateLimitRPS > 0 && cfg.Server.RateLimitBurst <= 0 {
 		cfg.Server.RateLimitBurst = cfg.Server.RateLimitRPS
+	}
+	cfg.Admin.Addr = strings.TrimSpace(cfg.Admin.Addr)
+	cfg.Admin.Token = strings.TrimSpace(cfg.Admin.Token)
+
+	if cfg.Admin.Enabled && cfg.Admin.Addr == "" {
+		cfg.Admin.Addr = defaultAdminAddr
 	}
 
 	for i := range cfg.Routes {
@@ -147,7 +160,7 @@ func normalize(cfg *Config) {
 func normalizePrefix(prefix string) string {
 	prefix = strings.TrimSpace(prefix)
 	if prefix == "" {
-		return ""
+		return "/"
 	}
 	if !strings.HasPrefix(prefix, "/") {
 		prefix = "/" + prefix
@@ -161,7 +174,7 @@ func normalizePrefix(prefix string) string {
 func normalizeStripPrefix(stripPrefix string) string {
 	stripPrefix = strings.TrimSpace(stripPrefix)
 	if stripPrefix == "" {
-		return ""
+		return "/"
 	}
 	if !strings.HasPrefix(stripPrefix, "/") {
 		stripPrefix = "/" + stripPrefix
@@ -317,14 +330,20 @@ func validateHealthCheck(scope string, healthCheck HealthCheckConfig) error {
 }
 
 func validateAdmin(cfg *Config) error {
-	cfg.Admin.Token = strings.TrimSpace(cfg.Admin.Token)
+	if !cfg.Admin.Enabled {
+		if cfg.Admin.MetricsRequireToken {
+			return fmt.Errorf("admin.metricsRequireToken requires admin.enabled to be true")
+		}
 
-	if cfg.Admin.Enable && cfg.Admin.Token == "" {
-		return fmt.Errorf("admin.token is required when admin is enabled")
+		return nil
 	}
 
-	if cfg.Admin.MetricsRequireToken && cfg.Admin.Token == "" {
-		return fmt.Errorf("admin.token is required when metricsRequireToken is enabled")
+	if cfg.Admin.Addr == "" {
+		return fmt.Errorf("admin.addr is required when admin.enabled is true")
+	}
+
+	if cfg.Admin.Token == "" {
+		return fmt.Errorf("admin.token is required when admin.enabled is true")
 	}
 
 	return nil

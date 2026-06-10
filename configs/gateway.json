@@ -1,15 +1,16 @@
 {
   "server": {
-    "addr": ":9090",
-    "requestTimeout": "10s",
+    "addr": ":9000",
+    "requestTimeout": "3s",
     "shutdownTimeout": "10s",
-    "rateLimitRPS":20,
-    "rateLimitBurst":20,
-    "maxConcurrency": 100
+    "rateLimitRPS": 0,
+    "rateLimitBurst": 0,
+    "maxConcurrency": 0
   },
   "admin": {
-    "enable": true,
-    "token": "dev-secret",
+    "enabled": true,
+    "addr": "127.0.0.1:9001",
+    "token": "${GATEWAY_ADMIN_TOKEN}",
     "metricsRequireToken": false
   },
   "routes": [
@@ -17,24 +18,16 @@
       "id": "demo",
       "prefix": "/api/",
       "stripPrefix": "/api",
-      "target": "http://localhost:8081",
-      "rateLimitRPS":10,
-      "rateLimitBurst":10,
-      "maxConcurrency": 10,
+      "target": "${DEMO_BACKEND_URL:http://localhost:8081}",
+      "rateLimitRPS": 0,
+      "rateLimitBurst": 0,
+      "maxConcurrency": 0,
       "healthCheck": {
         "enabled": true,
         "path": "/health",
         "interval": "3s",
         "timeout": "1s"
       }
-    },
-    {
-      "id": "backend2",
-      "prefix": "/b2/",
-      "stripPrefix": "/b2",
-      "target": "http://localhost:8082",
-      "rateLimitRPS":5,
-      "rateLimitBurst":5
     }
   ]
 }

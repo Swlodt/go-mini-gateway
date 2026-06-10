@@ -52,7 +52,7 @@ type routeStatusDTO struct {
 }
 
 func (s *Server) registerAdminRoutes(mux *http.ServeMux) {
-	if s.adminEnable {
+	if s.adminEnabled {
 		mux.Handle("/admin/routes", s.adminAuthMiddleware(http.HandlerFunc(s.handleAdminRoutes)))
 		mux.Handle("/admin/health", s.adminAuthMiddleware(http.HandlerFunc(s.handleAdminHealth)))
 		mux.Handle("/admin/stats", s.adminAuthMiddleware(http.HandlerFunc(s.handleAdminStats)))
@@ -111,7 +111,7 @@ func (s *Server) handleAdminHealth(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
-		snapshot := route.healthChecker.SnapShot()
+		snapshot := route.healthChecker.Snapshot()
 
 		items = append(items, healthDTO{
 			RouteID:       route.id,
@@ -158,7 +158,7 @@ func (s *Server) handleAdminStats(w http.ResponseWriter, r *http.Request) {
 			item.Concurrency = new(route.concurrencyLimiter.Snapshot())
 		}
 		if route.healthChecker != nil {
-			item.Health = new(route.healthChecker.SnapShot())
+			item.Health = new(route.healthChecker.Snapshot())
 		}
 		resp.Routes = append(resp.Routes, item)
 	}
