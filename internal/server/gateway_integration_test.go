@@ -714,7 +714,11 @@ func TestGatewayPprofEnabled(t *testing.T) {
 	if err != nil {
 		t.Fatalf("request pprof failed: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func(Body io.ReadCloser) {
+		err := Body.Close()
+		if err != nil {
+		}
+	}(resp.Body)
 
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status got %d, want %d", resp.StatusCode, http.StatusOK)
@@ -745,7 +749,11 @@ func TestGatewayPprofDisabled(t *testing.T) {
 	if err != nil {
 		t.Fatalf("request pprof failed: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func(Body io.ReadCloser) {
+		err := Body.Close()
+		if err != nil {
+		}
+	}(resp.Body)
 
 	if resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("status got %d, want %d", resp.StatusCode, http.StatusNotFound)
@@ -819,5 +827,151 @@ func TestGatewayRoundRobinUpstreams(t *testing.T) {
 
 	if upstreamHeaders["backend-2"] != 3 {
 		t.Fatalf("X-Gateway-Upstream backend-2 count got %d, want 3, headers=%v", upstreamHeaders["backend-2"], upstreamHeaders)
+	}
+}
+
+func TestGatewayPassiveHealthSkipsFailedUpstream(t *testing.T) {
+	backend1Requests := 0
+	backend1 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		backend1Requests++
+		w.Header().Set("X-Backend-ID", "backend-1")
+		http.Error(w, "backend-1 failed", http.StatusInternalServerError)
+	}))
+	defer backend1.Close()
+
+	backend2Requests := 0
+	backend2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		backend2Requests++
+		w.Header().Set("X-Backend-ID", "backend-2")
+		_, _ = w.Write([]byte("backend-2"))
+	}))
+	defer backend2.Close()
+
+	mainAddr := freeLocalAddr(t)
+	adminAddr := freeLocalAddr(t)
+
+	cfg := newTestGatewayConfig(mainAddr, adminAddr, "")
+	cfg.Routes[0].Target = backend1.URL
+	cfg.Routes[0].Upstreams = []config.UpstreamConfig{
+		{
+			ID:  "backend-1",
+			URL: backend1.URL,
+		},
+		{
+			ID:  "backend-2",
+			URL: backend2.URL,
+		},
+	}
+	cfg.Routes[0].PassiveHealth = config.PassiveHealthConfig{
+		Enabled:           true,
+		FailureThreshold:  1,
+		SuccessThreshold:  1,
+		UnhealthyDuration: time.Hour.String(),
+	}
+
+	startTestGateway(t, cfg)
+
+	resp, err := http.Get("http://" + mainAddr + "/api/hello")
+	if err != nil {
+		t.Fatalf("first request failed: %v", err)
+	}
+	_ = resp.Body.Close()
+
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("first status got %d, want %d", resp.StatusCode, http.StatusInternalServerError)
+	}
+	if got := resp.Header.Get("X-Gateway-Upstream"); got != "backend-1" {
+		t.Fatalf("first X-Gateway-Upstream got %q, want backend-1", got)
+	}
+
+	for i := 0; i < 5; i++ {
+		resp, err := http.Get("http://" + mainAddr + "/api/hello")
+		if err != nil {
+			t.Fatalf("request %d failed: %v", i+2, err)
+		}
+		body, err := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		if err != nil {
+			t.Fatalf("read response body failed: %v", err)
+		}
+
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("request %d status got %d, want %d", i+2, resp.StatusCode, http.StatusOK)
+		}
+		if got := resp.Header.Get("X-Gateway-Upstream"); got != "backend-2" {
+			t.Fatalf("request %d X-Gateway-Upstream got %q, want backend-2", i+2, got)
+		}
+		if string(body) != "backend-2" {
+			t.Fatalf("request %d body got %q, want backend-2", i+2, string(body))
+		}
+	}
+
+	if backend1Requests != 1 {
+		t.Fatalf("backend1 requests got %d, want 1", backend1Requests)
+	}
+	if backend2Requests != 5 {
+		t.Fatalf("backend2 requests got %d, want 5", backend2Requests)
+	}
+}
+
+func TestGatewayPassiveHealthNoAvailableUpstream(t *testing.T) {
+	backend1 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "backend-1 failed", http.StatusInternalServerError)
+	}))
+	defer backend1.Close()
+
+	backend2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "backend-2 failed", http.StatusInternalServerError)
+	}))
+	defer backend2.Close()
+
+	mainAddr := freeLocalAddr(t)
+	adminAddr := freeLocalAddr(t)
+
+	cfg := newTestGatewayConfig(mainAddr, adminAddr, "")
+	cfg.Routes[0].Target = backend1.URL
+	cfg.Routes[0].Upstreams = []config.UpstreamConfig{
+		{
+			ID:  "backend-1",
+			URL: backend1.URL,
+		},
+		{
+			ID:  "backend-2",
+			URL: backend2.URL,
+		},
+	}
+	cfg.Routes[0].PassiveHealth = config.PassiveHealthConfig{
+		Enabled:           true,
+		FailureThreshold:  1,
+		SuccessThreshold:  1,
+		UnhealthyDuration: time.Hour.String(),
+	}
+
+	startTestGateway(t, cfg)
+
+	for i := 0; i < 2; i++ {
+		resp, err := http.Get("http://" + mainAddr + "/api/hello")
+		if err != nil {
+			t.Fatalf("request %d failed: %v", i+1, err)
+		}
+		_ = resp.Body.Close()
+
+		if resp.StatusCode != http.StatusInternalServerError {
+			t.Fatalf("request %d status got %d, want %d", i+1, resp.StatusCode, http.StatusInternalServerError)
+		}
+	}
+
+	resp, err := http.Get("http://" + mainAddr + "/api/hello")
+	if err != nil {
+		t.Fatalf("third request failed: %v", err)
+	}
+	defer func(Body io.ReadCloser) {
+		err := Body.Close()
+		if err != nil {
+		}
+	}(resp.Body)
+
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("third status got %d, want %d", resp.StatusCode, http.StatusServiceUnavailable)
 	}
 }

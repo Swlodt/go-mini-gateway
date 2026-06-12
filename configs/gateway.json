@@ -38,6 +38,12 @@
         "path": "/health",
         "interval": "3s",
         "timeout": "1s"
+      },
+      "passiveHealth": {
+        "enabled": true,
+        "failureThreshold": 3,
+        "successThreshold": 1,
+        "unhealthyDuration": "10s"
       }
     }
   ]

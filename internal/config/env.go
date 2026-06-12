@@ -67,6 +67,11 @@ func expandConfigEnv(cfg *Config) error {
 			}
 		}
 
+		cfg.Routes[i].PassiveHealth.UnhealthyDuration, err = expandEnvString(cfg.Routes[i].PassiveHealth.UnhealthyDuration)
+		if err != nil {
+			return fmt.Errorf("expand routes[%d].passiveHealth.unhealthyDuration failed: %w", i, err)
+		}
+
 		cfg.Routes[i].HealthCheck.Path, err = expandEnvString(cfg.Routes[i].HealthCheck.Path)
 		if err != nil {
 			return fmt.Errorf("expand routes[%d].healthCheck.path failed: %w", i, err)

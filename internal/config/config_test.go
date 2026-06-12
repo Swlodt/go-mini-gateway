@@ -769,3 +769,149 @@ func TestValidateHealthCheck(t *testing.T) {
 		})
 	}
 }
+
+func TestLoadWithPassiveHealth(t *testing.T) {
+	configContent := `{
+  "server": {
+    "addr": ":9000"
+  },
+  "admin": {
+    "enabled": false
+  },
+  "routes": [
+    {
+      "id": "demo",
+      "prefix": "/api/",
+      "target": "http://localhost:8081",
+      "passiveHealth": {
+        "enabled": true,
+        "failureThreshold": 2,
+        "successThreshold": 1,
+        "unhealthyDuration": "30s"
+      }
+    }
+  ]
+}`
+
+	cfg, err := Load(writeTempConfig(t, configContent))
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+
+	passiveHealth := cfg.Routes[0].PassiveHealth
+	if !passiveHealth.Enabled {
+		t.Fatalf("passiveHealth.enabled got false, want true")
+	}
+	if passiveHealth.FailureThreshold != 2 {
+		t.Fatalf("failureThreshold got %d, want 2", passiveHealth.FailureThreshold)
+	}
+	if passiveHealth.SuccessThreshold != 1 {
+		t.Fatalf("successThreshold got %d, want 1", passiveHealth.SuccessThreshold)
+	}
+	if passiveHealth.UnhealthyDuration != "30s" {
+		t.Fatalf("unhealthyDuration got %q, want 30s", passiveHealth.UnhealthyDuration)
+	}
+}
+
+func TestLoadWithPassiveHealthDefaults(t *testing.T) {
+	configContent := `{
+  "server": {
+    "addr": ":9000"
+  },
+  "admin": {
+    "enabled": false
+  },
+  "routes": [
+    {
+      "id": "demo",
+      "prefix": "/api/",
+      "target": "http://localhost:8081",
+      "passiveHealth": {
+        "enabled": true
+      }
+    }
+  ]
+}`
+
+	cfg, err := Load(writeTempConfig(t, configContent))
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+
+	passiveHealth := cfg.Routes[0].PassiveHealth
+	if passiveHealth.FailureThreshold != 3 {
+		t.Fatalf("failureThreshold got %d, want 3", passiveHealth.FailureThreshold)
+	}
+	if passiveHealth.SuccessThreshold != 1 {
+		t.Fatalf("successThreshold got %d, want 1", passiveHealth.SuccessThreshold)
+	}
+	if passiveHealth.UnhealthyDuration != "10s" {
+		t.Fatalf("unhealthyDuration got %q, want 10s", passiveHealth.UnhealthyDuration)
+	}
+}
+
+func TestValidatePassiveHealth(t *testing.T) {
+	tests := []struct {
+		name          string
+		passiveHealth PassiveHealthConfig
+		wantErr       bool
+	}{
+		{
+			name: "disabled",
+			passiveHealth: PassiveHealthConfig{
+				Enabled: false,
+			},
+		},
+		{
+			name: "enabled valid",
+			passiveHealth: PassiveHealthConfig{
+				Enabled:           true,
+				FailureThreshold:  3,
+				SuccessThreshold:  1,
+				UnhealthyDuration: "10s",
+			},
+		},
+		{
+			name: "invalid failure threshold",
+			passiveHealth: PassiveHealthConfig{
+				Enabled:           true,
+				FailureThreshold:  0,
+				SuccessThreshold:  1,
+				UnhealthyDuration: "10s",
+			},
+			wantErr: true,
+		},
+		{
+			name: "invalid success threshold",
+			passiveHealth: PassiveHealthConfig{
+				Enabled:           true,
+				FailureThreshold:  3,
+				SuccessThreshold:  0,
+				UnhealthyDuration: "10s",
+			},
+			wantErr: true,
+		},
+		{
+			name: "invalid duration",
+			passiveHealth: PassiveHealthConfig{
+				Enabled:           true,
+				FailureThreshold:  3,
+				SuccessThreshold:  1,
+				UnhealthyDuration: "bad",
+			},
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validatePassiveHealth("test", tt.passiveHealth)
+			if tt.wantErr && err == nil {
+				t.Fatalf("expected error, got nil")
+			}
+			if !tt.wantErr && err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+		})
+	}
+}

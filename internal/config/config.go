@@ -40,15 +40,16 @@ type AdminConfig struct {
 }
 
 type RouteConfig struct {
-	ID             string            `json:"id"`
-	Prefix         string            `json:"prefix"`
-	StripPrefix    string            `json:"stripPrefix"`
-	Target         string            `json:"target"`
-	Upstreams      []UpstreamConfig  `json:"upstreams"`
-	RateLimitRPS   int               `json:"rateLimitRPS"`
-	RateLimitBurst int               `json:"rateLimitBurst"`
-	MaxConcurrency int               `json:"maxConcurrency"`
-	HealthCheck    HealthCheckConfig `json:"healthCheck"`
+	ID             string              `json:"id"`
+	Prefix         string              `json:"prefix"`
+	StripPrefix    string              `json:"stripPrefix"`
+	Target         string              `json:"target"`
+	Upstreams      []UpstreamConfig    `json:"upstreams"`
+	RateLimitRPS   int                 `json:"rateLimitRPS"`
+	RateLimitBurst int                 `json:"rateLimitBurst"`
+	MaxConcurrency int                 `json:"maxConcurrency"`
+	HealthCheck    HealthCheckConfig   `json:"healthCheck"`
+	PassiveHealth  PassiveHealthConfig `json:"passiveHealth"`
 }
 
 type UpstreamConfig struct {
@@ -61,6 +62,13 @@ type HealthCheckConfig struct {
 	Path     string `json:"path"`
 	Interval string `json:"interval"`
 	Timeout  string `json:"timeout"`
+}
+
+type PassiveHealthConfig struct {
+	Enabled           bool   `json:"enabled"`
+	FailureThreshold  int    `json:"failureThreshold"`
+	SuccessThreshold  int    `json:"successThreshold"`
+	UnhealthyDuration string `json:"unhealthyDuration"`
 }
 
 func (c *Config) Addr() string {
@@ -165,6 +173,18 @@ func normalize(cfg *Config) {
 
 		if cfg.Routes[i].RateLimitRPS > 0 && cfg.Routes[i].RateLimitBurst <= 0 {
 			cfg.Routes[i].RateLimitBurst = cfg.Routes[i].RateLimitRPS
+		}
+
+		if cfg.Routes[i].PassiveHealth.Enabled {
+			if cfg.Routes[i].PassiveHealth.FailureThreshold <= 0 {
+				cfg.Routes[i].PassiveHealth.FailureThreshold = 3
+			}
+			if cfg.Routes[i].PassiveHealth.SuccessThreshold <= 0 {
+				cfg.Routes[i].PassiveHealth.SuccessThreshold = 1
+			}
+			if cfg.Routes[i].PassiveHealth.UnhealthyDuration == "" {
+				cfg.Routes[i].PassiveHealth.UnhealthyDuration = "10s"
+			}
 		}
 
 		if cfg.Routes[i].HealthCheck.Enabled {
@@ -296,6 +316,9 @@ func validate(cfg *Config) error {
 		if err := validateHealthCheck(fmt.Sprintf("route[%d]", i), route.HealthCheck); err != nil {
 			return err
 		}
+		if err := validatePassiveHealth(fmt.Sprintf("route[%d]", i), route.PassiveHealth); err != nil {
+			return err
+		}
 	}
 
 	return nil
@@ -403,6 +426,35 @@ func validateHealthCheck(scope string, healthCheck HealthCheckConfig) error {
 	return nil
 }
 
+func validatePassiveHealth(scope string, passiveHealth PassiveHealthConfig) error {
+	if !passiveHealth.Enabled {
+		return nil
+	}
+
+	if passiveHealth.FailureThreshold <= 0 {
+		return fmt.Errorf("%s.passiveHealth.failureThreshold must be > 0", scope)
+	}
+	if passiveHealth.SuccessThreshold <= 0 {
+		return fmt.Errorf("%s.passiveHealth.successThreshold must be > 0", scope)
+	}
+	if passiveHealth.FailureThreshold > 100000 {
+		return fmt.Errorf("%s.passiveHealth.failureThreshold is too large: %d", scope, passiveHealth.FailureThreshold)
+	}
+	if passiveHealth.SuccessThreshold > 100000 {
+		return fmt.Errorf("%s.passiveHealth.successThreshold is too large: %d", scope, passiveHealth.SuccessThreshold)
+	}
+
+	duration, err := passiveHealth.UnhealthyDurationDuration()
+	if err != nil {
+		return fmt.Errorf("%s.%w", scope, err)
+	}
+	if duration <= 0 {
+		return fmt.Errorf("%s.passiveHealth.unhealthyDuration must be > 0", scope)
+	}
+
+	return nil
+}
+
 func validateAdmin(cfg *Config) error {
 	if !cfg.Admin.Enabled {
 		if cfg.Admin.MetricsRequireToken {
@@ -441,6 +493,17 @@ func (h HealthCheckConfig) TimeoutDuration() (time.Duration, error) {
 	d, err := time.ParseDuration(h.Timeout)
 	if err != nil {
 		return 0, fmt.Errorf("invalid healthCheck.timeout %q: %w", h.Timeout, err)
+	}
+	return d, nil
+}
+
+func (p PassiveHealthConfig) UnhealthyDurationDuration() (time.Duration, error) {
+	if p.UnhealthyDuration == "" {
+		return 10 * time.Second, nil
+	}
+	d, err := time.ParseDuration(p.UnhealthyDuration)
+	if err != nil {
+		return 0, fmt.Errorf("invalid passiveHealth.unhealthyDuration %q: %w", p.UnhealthyDuration, err)
 	}
 	return d, nil
 }

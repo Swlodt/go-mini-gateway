@@ -164,11 +164,17 @@ func registerRoutes(mux *http.ServeMux, routes []config.RouteConfig) (*routeRegi
 	}
 
 	for _, route := range routes {
+		passiveHealth, err := toProxyPassiveHealthOptions(route.PassiveHealth)
+		if err != nil {
+			return nil, fmt.Errorf("create passive health options for route %q failed: %w", route.ID, err)
+		}
+
 		proxyHandler, err := proxy.New(proxy.Options{
-			RouteID:     route.ID,
-			Target:      route.Target,
-			Upstreams:   toProxyUpstreamOptions(route.Upstreams),
-			StripPrefix: route.StripPrefix,
+			RouteID:       route.ID,
+			Target:        route.Target,
+			Upstreams:     toProxyUpstreamOptions(route.Upstreams),
+			StripPrefix:   route.StripPrefix,
+			PassiveHealth: passiveHealth,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("create proxy handler for route %q failed: %w", route.ID, err)
@@ -262,6 +268,24 @@ func registerRoutes(mux *http.ServeMux, routes []config.RouteConfig) (*routeRegi
 		result.proxyHandlers = append(result.proxyHandlers, proxyHandler)
 	}
 	return result, nil
+}
+
+func toProxyPassiveHealthOptions(passiveHealth config.PassiveHealthConfig) (proxy.PassiveHealthOptions, error) {
+	if !passiveHealth.Enabled {
+		return proxy.PassiveHealthOptions{}, nil
+	}
+
+	unhealthyDuration, err := passiveHealth.UnhealthyDurationDuration()
+	if err != nil {
+		return proxy.PassiveHealthOptions{}, err
+	}
+
+	return proxy.PassiveHealthOptions{
+		Enabled:           passiveHealth.Enabled,
+		FailureThreshold:  passiveHealth.FailureThreshold,
+		SuccessThreshold:  passiveHealth.SuccessThreshold,
+		UnhealthyDuration: unhealthyDuration,
+	}, nil
 }
 
 func toProxyUpstreamOptions(upstreams []config.UpstreamConfig) []proxy.UpstreamOptions {
