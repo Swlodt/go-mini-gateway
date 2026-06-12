@@ -5,6 +5,9 @@ services:
       dockerfile: Dockerfile
       args:
         APP: gateway
+        GO_VERSION: ${GO_VERSION:-1.26}
+        ALPINE_MIRROR: ${ALPINE_MIRROR:-https://mirrors.aliyun.com/alpine}
+        GOPROXY: ${GOPROXY:-https://goproxy.cn,direct}
     image: go-mini-gateway:local
     container_name: go-mini-gateway
     command: ["-config", "/app/configs/gateway.docker.json"]
@@ -24,6 +27,9 @@ services:
       dockerfile: Dockerfile
       args:
         APP: backend
+        GO_VERSION: ${GO_VERSION:-1.26}
+        ALPINE_MIRROR: ${ALPINE_MIRROR:-https://mirrors.aliyun.com/alpine}
+        GOPROXY: ${GOPROXY:-https://goproxy.cn,direct}
     image: go-mini-gateway-backend1:local
     container_name: go-mini-gateway-backend1
     expose:
@@ -38,6 +44,9 @@ services:
       dockerfile: Dockerfile
       args:
         APP: backend2
+        GO_VERSION: ${GO_VERSION:-1.26}
+        ALPINE_MIRROR: ${ALPINE_MIRROR:-https://mirrors.aliyun.com/alpine}
+        GOPROXY: ${GOPROXY:-https://goproxy.cn,direct}
     image: go-mini-gateway-backend2:local
     container_name: go-mini-gateway-backend2
     expose:

@@ -1,6 +1,9 @@
 APP_NAME ?= go-mini-gateway
 CONFIG ?= configs/gateway.json
 ADMIN_TOKEN ?= dev-token
+GO_VERSION ?= 1.26
+ALPINE_MIRROR ?= https://mirrors.aliyun.com/alpine
+GOPROXY ?= https://goproxy.cn,direct
 
 .PHONY: test build run-gateway run-backend1 run-backend2 docker-build docker-up docker-down docker-logs docker-ps docker-reload docker-smoke clean
 
@@ -23,10 +26,10 @@ run-backend2:
 	go run ./cmd/backend2
 
 docker-build:
-	docker compose build
+	GO_VERSION=$(GO_VERSION) ALPINE_MIRROR=$(ALPINE_MIRROR) GOPROXY=$(GOPROXY) docker compose build
 
 docker-up:
-	GATEWAY_ADMIN_TOKEN=$(ADMIN_TOKEN) docker compose up --build
+	GATEWAY_ADMIN_TOKEN=$(ADMIN_TOKEN) GO_VERSION=$(GO_VERSION) ALPINE_MIRROR=$(ALPINE_MIRROR) GOPROXY=$(GOPROXY) docker compose up --build
 
 docker-down:
 	docker compose down
