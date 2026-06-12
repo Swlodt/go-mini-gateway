@@ -87,7 +87,7 @@ func main() {
 
 	log.Printf("backend listening on %s", server.Addr)
 
-	if err := server.ListenAndServe(); err != nil && errors.Is(err, http.ErrServerClosed) {
+	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Fatalf("backend server failed: %v", err)
 	}
 

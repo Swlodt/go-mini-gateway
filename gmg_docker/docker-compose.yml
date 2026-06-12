@@ -1,0 +1,47 @@
+services:
+  gateway:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        APP: gateway
+    image: go-mini-gateway:local
+    container_name: go-mini-gateway
+    command: ["-config", "/app/configs/gateway.docker.json"]
+    environment:
+      GATEWAY_ADMIN_TOKEN: ${GATEWAY_ADMIN_TOKEN:-dev-token}
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    depends_on:
+      - backend1
+      - backend2
+    restart: unless-stopped
+
+  backend1:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        APP: backend
+    image: go-mini-gateway-backend1:local
+    container_name: go-mini-gateway-backend1
+    expose:
+      - "8081"
+    ports:
+      - "8081:8081"
+    restart: unless-stopped
+
+  backend2:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        APP: backend2
+    image: go-mini-gateway-backend2:local
+    container_name: go-mini-gateway-backend2
+    expose:
+      - "8082"
+    ports:
+      - "8082:8082"
+    restart: unless-stopped
