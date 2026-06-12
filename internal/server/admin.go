@@ -1,65 +1,6 @@
 package server
 
-import (
-	"encoding/json"
-	"go-mini-gateway/internal/concurrency"
-	"go-mini-gateway/internal/health"
-	"go-mini-gateway/internal/proxy"
-	"go-mini-gateway/internal/ratelimit"
-	"net/http"
-	"net/http/pprof"
-)
-
-type routeDTO struct {
-	ID                 string                   `json:"id"`
-	Prefix             string                   `json:"prefix"`
-	StripPrefix        string                   `json:"stripPrefix"`
-	Target             string                   `json:"target"`
-	Upstreams          []proxy.UpstreamSnapshot `json:"upstreams"`
-	RateLimitRPS       int                      `json:"rateLimitRPS"`
-	RateLimitBurst     int                      `json:"rateLimitBurst"`
-	MaxConcurrency     int                      `json:"maxConcurrency"`
-	HealthCheckEnabled bool                     `json:"healthCheckEnabled"`
-	HealthCheckPath    string                   `json:"healthCheckPath,omitempty"`
-}
-
-type healthDTO struct {
-	RouteID   string              `json:"routeId"`
-	Target    string              `json:"target"`
-	Checked   bool                `json:"checked"`
-	Healthy   bool                `json:"healthy"`
-	Upstreams []upstreamHealthDTO `json:"upstreams,omitempty"`
-}
-
-type upstreamHealthDTO struct {
-	ID            string `json:"id"`
-	URL           string `json:"url"`
-	Name          string `json:"name"`
-	Path          string `json:"path,omitempty"`
-	Interval      string `json:"interval,omitempty"`
-	Timeout       string `json:"timeout,omitempty"`
-	Checked       bool   `json:"checked"`
-	Healthy       bool   `json:"healthy"`
-	LastCheckedAt string `json:"lastCheckedAt,omitempty"`
-	LastReason    string `json:"lastReason,omitempty"`
-}
-
-type statusDTO struct {
-	Global globalStatusDTO  `json:"global"`
-	Routes []routeStatusDTO `json:"routes"`
-}
-
-type globalStatusDTO struct {
-	RateLimit   *ratelimit.SnapShot   `json:"rateLimit,omitempty"`
-	Concurrency *concurrency.Snapshot `json:"concurrency,omitempty"`
-}
-
-type routeStatusDTO struct {
-	ID          string                `json:"id"`
-	RateLimit   *ratelimit.SnapShot   `json:"rateLimit,omitempty"`
-	Concurrency *concurrency.Snapshot `json:"concurrency,omitempty"`
-	Health      *health.Snapshot      `json:"health,omitempty"`
-}
+import "net/http"
 
 func (s *Server) registerAdminRoutes(mux *http.ServeMux) {
 	if s.adminEnabled {
@@ -79,21 +20,6 @@ func (s *Server) registerAdminRoutes(mux *http.ServeMux) {
 		return
 	}
 	mux.Handle("/metrics", metricsHandler)
-}
-
-func (s *Server) registerPprofRoutes(mux *http.ServeMux) {
-	mux.Handle("/debug/pprof/", s.adminAuthMiddleware(http.HandlerFunc(pprof.Index)))
-	mux.Handle("/debug/pprof/cmdline", s.adminAuthMiddleware(http.HandlerFunc(pprof.Cmdline)))
-	mux.Handle("/debug/pprof/profile", s.adminAuthMiddleware(http.HandlerFunc(pprof.Profile)))
-	mux.Handle("/debug/pprof/symbol", s.adminAuthMiddleware(http.HandlerFunc(pprof.Symbol)))
-	mux.Handle("/debug/pprof/trace", s.adminAuthMiddleware(http.HandlerFunc(pprof.Trace)))
-
-	mux.Handle("/debug/pprof/allocs", s.adminAuthMiddleware(pprof.Handler("allocs")))
-	mux.Handle("/debug/pprof/block", s.adminAuthMiddleware(pprof.Handler("block")))
-	mux.Handle("/debug/pprof/goroutine", s.adminAuthMiddleware(pprof.Handler("goroutine")))
-	mux.Handle("/debug/pprof/heap", s.adminAuthMiddleware(pprof.Handler("heap")))
-	mux.Handle("/debug/pprof/mutex", s.adminAuthMiddleware(pprof.Handler("mutex")))
-	mux.Handle("/debug/pprof/threadcreate", s.adminAuthMiddleware(pprof.Handler("threadcreate")))
 }
 
 func (s *Server) handleAdminRoutes(w http.ResponseWriter, r *http.Request) {
@@ -244,16 +170,4 @@ func (s *Server) handlePrometheusMetrics(w http.ResponseWriter, r *http.Request)
 	}
 
 	_, _ = w.Write([]byte(s.metricsRegistry.PrometheusText()))
-}
-
-func writeJSON(w http.ResponseWriter, statusCode int, value any) {
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	w.WriteHeader(statusCode)
-
-	encoder := json.NewEncoder(w)
-	encoder.SetIndent("", "  ")
-
-	if err := encoder.Encode(value); err != nil {
-		return
-	}
 }
