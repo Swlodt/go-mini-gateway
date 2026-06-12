@@ -164,6 +164,11 @@ func registerRoutes(mux *http.ServeMux, routes []config.RouteConfig) (*routeRegi
 	}
 
 	for _, route := range routes {
+		activeHealth, err := toProxyActiveHealthOptions(route.HealthCheck)
+		if err != nil {
+			return nil, fmt.Errorf("create active health options for route %q failed: %w", route.ID, err)
+		}
+
 		passiveHealth, err := toProxyPassiveHealthOptions(route.PassiveHealth)
 		if err != nil {
 			return nil, fmt.Errorf("create passive health options for route %q failed: %w", route.ID, err)
@@ -175,11 +180,13 @@ func registerRoutes(mux *http.ServeMux, routes []config.RouteConfig) (*routeRegi
 		}
 
 		proxyHandler, err := proxy.New(proxy.Options{
-			RouteID:       route.ID,
-			Target:        route.Target,
-			Upstreams:     toProxyUpstreamOptions(route.Upstreams),
-			StripPrefix:   route.StripPrefix,
-			PassiveHealth: passiveHealth,
+			RouteID:        route.ID,
+			Target:         route.Target,
+			Upstreams:      toProxyUpstreamOptions(route.Upstreams),
+			StripPrefix:    route.StripPrefix,
+			ActiveHealth:   activeHealth,
+			PassiveHealth:  passiveHealth,
+			CircuitBreaker: circuitBreaker,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("create proxy handler for route %q failed: %w", route.ID, err)
@@ -200,32 +207,6 @@ func registerRoutes(mux *http.ServeMux, routes []config.RouteConfig) (*routeRegi
 		}
 
 		var routeHandler http.Handler = proxyHandler
-
-		if route.HealthCheck.Enabled {
-			interval, err := route.HealthCheck.IntervalDuration()
-			if err != nil {
-				return nil, err
-			}
-			timeout, err := route.HealthCheck.TimeoutDuration()
-			if err != nil {
-				return nil, err
-			}
-			checker, err := health.NewChecker(health.Options{
-				Name:     route.ID,
-				Target:   route.Target,
-				Path:     route.HealthCheck.Path,
-				Interval: interval,
-				Timeout:  timeout,
-			})
-			if err != nil {
-				return nil, fmt.Errorf("create health checker for route %q failed: %w", route.ID, err)
-			}
-			checker.Start()
-
-			runtimeRoute.healthChecker = checker
-			result.healthCheckers = append(result.healthCheckers, checker)
-			routeHandler = health.Middleware(checker)(routeHandler)
-		}
 
 		if route.MaxConcurrency > 0 {
 			limitName := "route:" + route.ID
@@ -273,6 +254,28 @@ func registerRoutes(mux *http.ServeMux, routes []config.RouteConfig) (*routeRegi
 		result.proxyHandlers = append(result.proxyHandlers, proxyHandler)
 	}
 	return result, nil
+}
+
+func toProxyActiveHealthOptions(healthCheck config.HealthCheckConfig) (proxy.ActiveHealthOptions, error) {
+	if !healthCheck.Enabled {
+		return proxy.ActiveHealthOptions{}, nil
+	}
+
+	interval, err := healthCheck.IntervalDuration()
+	if err != nil {
+		return proxy.ActiveHealthOptions{}, err
+	}
+	timeout, err := healthCheck.TimeoutDuration()
+	if err != nil {
+		return proxy.ActiveHealthOptions{}, err
+	}
+
+	return proxy.ActiveHealthOptions{
+		Enabled:  true,
+		Path:     healthCheck.Path,
+		Interval: interval,
+		Timeout:  timeout,
+	}, nil
 }
 
 func toProxyPassiveHealthOptions(passiveHealth config.PassiveHealthConfig) (proxy.PassiveHealthOptions, error) {

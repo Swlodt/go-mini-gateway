@@ -24,9 +24,16 @@ type routeDTO struct {
 }
 
 type healthDTO struct {
-	RouteID string `json:"routeId"`
-	Target  string `json:"target"`
+	RouteID   string              `json:"routeId"`
+	Target    string              `json:"target"`
+	Checked   bool                `json:"checked"`
+	Healthy   bool                `json:"healthy"`
+	Upstreams []upstreamHealthDTO `json:"upstreams,omitempty"`
+}
 
+type upstreamHealthDTO struct {
+	ID            string `json:"id"`
+	URL           string `json:"url"`
 	Name          string `json:"name"`
 	Path          string `json:"path,omitempty"`
 	Interval      string `json:"interval,omitempty"`
@@ -128,30 +135,54 @@ func (s *Server) handleAdminHealth(w http.ResponseWriter, r *http.Request) {
 	items := make([]healthDTO, 0, len(s.routes))
 
 	for _, route := range s.routes {
-		if route.healthChecker == nil {
-			items = append(items, healthDTO{
-				RouteID: route.id,
-				Target:  route.target,
-				Checked: false,
-				Healthy: true,
-			})
-			continue
+		upstreams := route.upstreams
+		if route.proxyHandler != nil {
+			upstreams = route.proxyHandler.UpstreamSnapshots()
 		}
 
-		snapshot := route.healthChecker.Snapshot()
+		item := healthDTO{
+			RouteID: route.id,
+			Target:  route.target,
+			Healthy: true,
+		}
 
-		items = append(items, healthDTO{
-			RouteID:       route.id,
-			Target:        route.target,
-			Name:          snapshot.Name,
-			Path:          snapshot.Path,
-			Interval:      snapshot.Interval,
-			Timeout:       snapshot.Timeout,
-			Checked:       snapshot.Checked,
-			Healthy:       snapshot.Healthy,
-			LastCheckedAt: snapshot.LastCheckedAt,
-			LastReason:    snapshot.LastReason,
-		})
+		for _, upstream := range upstreams {
+			if upstream.ActiveHealth == nil {
+				continue
+			}
+
+			snapshot := upstream.ActiveHealth
+			item.Checked = item.Checked || snapshot.Checked
+			// Active health is fail-open before the first check, so an unchecked upstream is still treated as available.
+			if snapshot.Checked && !snapshot.Healthy {
+				// The route is unhealthy only when every active-health-enabled upstream is checked and unhealthy.
+			}
+
+			item.Upstreams = append(item.Upstreams, upstreamHealthDTO{
+				ID:            upstream.ID,
+				URL:           upstream.URL,
+				Name:          snapshot.Name,
+				Path:          snapshot.Path,
+				Interval:      snapshot.Interval,
+				Timeout:       snapshot.Timeout,
+				Checked:       snapshot.Checked,
+				Healthy:       snapshot.Healthy,
+				LastCheckedAt: snapshot.LastCheckedAt,
+				LastReason:    snapshot.LastReason,
+			})
+		}
+
+		if len(item.Upstreams) > 0 {
+			item.Healthy = false
+			for _, upstream := range item.Upstreams {
+				if !upstream.Checked || upstream.Healthy {
+					item.Healthy = true
+					break
+				}
+			}
+		}
+
+		items = append(items, item)
 	}
 
 	writeJSON(w, http.StatusOK, items)

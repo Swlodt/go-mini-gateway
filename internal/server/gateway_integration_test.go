@@ -975,3 +975,358 @@ func TestGatewayPassiveHealthNoAvailableUpstream(t *testing.T) {
 		t.Fatalf("third status got %d, want %d", resp.StatusCode, http.StatusServiceUnavailable)
 	}
 }
+
+func TestGatewayCircuitBreakerSkipsOpenUpstream(t *testing.T) {
+	backend1Requests := 0
+	backend1 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		backend1Requests++
+		w.Header().Set("X-Backend-ID", "backend-1")
+		http.Error(w, "backend-1 failed", http.StatusInternalServerError)
+	}))
+	defer backend1.Close()
+
+	backend2Requests := 0
+	backend2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		backend2Requests++
+		w.Header().Set("X-Backend-ID", "backend-2")
+		_, _ = w.Write([]byte("backend-2"))
+	}))
+	defer backend2.Close()
+
+	mainAddr := freeLocalAddr(t)
+	adminAddr := freeLocalAddr(t)
+
+	cfg := newTestGatewayConfig(mainAddr, adminAddr, "")
+	cfg.Routes[0].Target = backend1.URL
+	cfg.Routes[0].Upstreams = []config.UpstreamConfig{
+		{
+			ID:  "backend-1",
+			URL: backend1.URL,
+		},
+		{
+			ID:  "backend-2",
+			URL: backend2.URL,
+		},
+	}
+	cfg.Routes[0].CircuitBreaker = config.CircuitBreakerConfig{
+		Enabled:             true,
+		FailureThreshold:    1,
+		OpenDuration:        time.Hour.String(),
+		HalfOpenMaxRequests: 1,
+	}
+
+	startTestGateway(t, cfg)
+
+	resp, err := http.Get("http://" + mainAddr + "/api/hello")
+	if err != nil {
+		t.Fatalf("first request failed: %v", err)
+	}
+	_ = resp.Body.Close()
+
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("first status got %d, want %d", resp.StatusCode, http.StatusInternalServerError)
+	}
+	if got := resp.Header.Get("X-Gateway-Upstream"); got != "backend-1" {
+		t.Fatalf("first X-Gateway-Upstream got %q, want backend-1", got)
+	}
+
+	for i := 0; i < 5; i++ {
+		resp, err := http.Get("http://" + mainAddr + "/api/hello")
+		if err != nil {
+			t.Fatalf("request %d failed: %v", i+2, err)
+		}
+		body, err := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		if err != nil {
+			t.Fatalf("read response body failed: %v", err)
+		}
+
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("request %d status got %d, want %d", i+2, resp.StatusCode, http.StatusOK)
+		}
+		if got := resp.Header.Get("X-Gateway-Upstream"); got != "backend-2" {
+			t.Fatalf("request %d X-Gateway-Upstream got %q, want backend-2", i+2, got)
+		}
+		if string(body) != "backend-2" {
+			t.Fatalf("request %d body got %q, want backend-2", i+2, string(body))
+		}
+	}
+
+	if backend1Requests != 1 {
+		t.Fatalf("backend1 requests got %d, want 1", backend1Requests)
+	}
+	if backend2Requests != 5 {
+		t.Fatalf("backend2 requests got %d, want 5", backend2Requests)
+	}
+}
+
+func TestGatewayCircuitBreakerNoAvailableUpstream(t *testing.T) {
+	backend1 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "backend-1 failed", http.StatusInternalServerError)
+	}))
+	defer backend1.Close()
+
+	backend2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "backend-2 failed", http.StatusInternalServerError)
+	}))
+	defer backend2.Close()
+
+	mainAddr := freeLocalAddr(t)
+	adminAddr := freeLocalAddr(t)
+
+	cfg := newTestGatewayConfig(mainAddr, adminAddr, "")
+	cfg.Routes[0].Target = backend1.URL
+	cfg.Routes[0].Upstreams = []config.UpstreamConfig{
+		{
+			ID:  "backend-1",
+			URL: backend1.URL,
+		},
+		{
+			ID:  "backend-2",
+			URL: backend2.URL,
+		},
+	}
+	cfg.Routes[0].CircuitBreaker = config.CircuitBreakerConfig{
+		Enabled:             true,
+		FailureThreshold:    1,
+		OpenDuration:        time.Hour.String(),
+		HalfOpenMaxRequests: 1,
+	}
+
+	startTestGateway(t, cfg)
+
+	for i := 0; i < 2; i++ {
+		resp, err := http.Get("http://" + mainAddr + "/api/hello")
+		if err != nil {
+			t.Fatalf("request %d failed: %v", i+1, err)
+		}
+		_ = resp.Body.Close()
+
+		if resp.StatusCode != http.StatusInternalServerError {
+			t.Fatalf("request %d status got %d, want %d", i+1, resp.StatusCode, http.StatusInternalServerError)
+		}
+	}
+
+	resp, err := http.Get("http://" + mainAddr + "/api/hello")
+	if err != nil {
+		t.Fatalf("third request failed: %v", err)
+	}
+	defer func(Body io.ReadCloser) {
+		err := Body.Close()
+		if err != nil {
+		}
+	}(resp.Body)
+
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("third status got %d, want %d", resp.StatusCode, http.StatusServiceUnavailable)
+	}
+}
+
+func TestGatewayCircuitBreakerHalfOpenRecovery(t *testing.T) {
+	backendRequests := 0
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		backendRequests++
+		if backendRequests == 1 {
+			http.Error(w, "first request failed", http.StatusInternalServerError)
+			return
+		}
+		_, _ = w.Write([]byte("recovered"))
+	}))
+	defer backend.Close()
+
+	mainAddr := freeLocalAddr(t)
+	adminAddr := freeLocalAddr(t)
+
+	cfg := newTestGatewayConfig(mainAddr, adminAddr, backend.URL)
+	cfg.Routes[0].CircuitBreaker = config.CircuitBreakerConfig{
+		Enabled:             true,
+		FailureThreshold:    1,
+		OpenDuration:        "50ms",
+		HalfOpenMaxRequests: 1,
+	}
+
+	startTestGateway(t, cfg)
+
+	resp, err := http.Get("http://" + mainAddr + "/api/hello")
+	if err != nil {
+		t.Fatalf("first request failed: %v", err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("first status got %d, want %d", resp.StatusCode, http.StatusInternalServerError)
+	}
+
+	resp, err = http.Get("http://" + mainAddr + "/api/hello")
+	if err != nil {
+		t.Fatalf("second request failed: %v", err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("second status got %d, want %d", resp.StatusCode, http.StatusServiceUnavailable)
+	}
+	if backendRequests != 1 {
+		t.Fatalf("backend requests got %d, want 1 before half-open trial", backendRequests)
+	}
+
+	time.Sleep(80 * time.Millisecond)
+
+	resp, err = http.Get("http://" + mainAddr + "/api/hello")
+	if err != nil {
+		t.Fatalf("third request failed: %v", err)
+	}
+	body, err := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if err != nil {
+		t.Fatalf("read response body failed: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("third status got %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+	if string(body) != "recovered" {
+		t.Fatalf("third body got %q, want recovered", string(body))
+	}
+
+	resp, err = http.Get("http://" + mainAddr + "/api/hello")
+	if err != nil {
+		t.Fatalf("fourth request failed: %v", err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("fourth status got %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+}
+
+func TestGatewayActiveHealthSkipsUnhealthyFirstUpstream(t *testing.T) {
+	backend1BusinessRequests := 0
+	backend1 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/health" {
+			http.Error(w, "backend-1 not ready", http.StatusServiceUnavailable)
+			return
+		}
+		backend1BusinessRequests++
+		w.Header().Set("X-Backend-ID", "backend-1")
+		_, _ = w.Write([]byte("backend-1"))
+	}))
+	defer backend1.Close()
+
+	backend2BusinessRequests := 0
+	backend2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/health" {
+			_, _ = w.Write([]byte("ok"))
+			return
+		}
+		backend2BusinessRequests++
+		w.Header().Set("X-Backend-ID", "backend-2")
+		_, _ = w.Write([]byte("backend-2"))
+	}))
+	defer backend2.Close()
+
+	mainAddr := freeLocalAddr(t)
+	adminAddr := freeLocalAddr(t)
+
+	cfg := newTestGatewayConfig(mainAddr, adminAddr, "")
+	cfg.Routes[0].Target = backend1.URL
+	cfg.Routes[0].Upstreams = []config.UpstreamConfig{
+		{ID: "backend-1", URL: backend1.URL},
+		{ID: "backend-2", URL: backend2.URL},
+	}
+	cfg.Routes[0].HealthCheck = config.HealthCheckConfig{
+		Enabled:  true,
+		Path:     "/health",
+		Interval: "30ms",
+		Timeout:  "10ms",
+	}
+
+	startTestGateway(t, cfg)
+
+	waitUntil(t, time.Second, func() bool {
+		upstreams := fetchAdminRouteUpstreams(t, adminAddr)
+		backend1Health := upstreams["backend-1"]
+		backend2Health := upstreams["backend-2"]
+		return backend1Health != nil && backend1Health["checked"] == true && backend1Health["healthy"] == false &&
+			backend2Health != nil && backend2Health["checked"] == true && backend2Health["healthy"] == true
+	})
+
+	for i := 0; i < 5; i++ {
+		resp, err := http.Get("http://" + mainAddr + "/api/hello")
+		if err != nil {
+			t.Fatalf("request %d failed: %v", i+1, err)
+		}
+		body, err := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		if err != nil {
+			t.Fatalf("read response body failed: %v", err)
+		}
+
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("request %d status got %d, want %d", i+1, resp.StatusCode, http.StatusOK)
+		}
+		if got := resp.Header.Get("X-Gateway-Upstream"); got != "backend-2" {
+			t.Fatalf("request %d X-Gateway-Upstream got %q, want backend-2", i+1, got)
+		}
+		if string(body) != "backend-2" {
+			t.Fatalf("request %d body got %q, want backend-2", i+1, string(body))
+		}
+	}
+
+	if backend1BusinessRequests != 0 {
+		t.Fatalf("backend1 business requests got %d, want 0", backend1BusinessRequests)
+	}
+	if backend2BusinessRequests != 5 {
+		t.Fatalf("backend2 business requests got %d, want 5", backend2BusinessRequests)
+	}
+}
+
+func fetchAdminRouteUpstreams(t *testing.T, adminAddr string) map[string]map[string]any {
+	t.Helper()
+
+	req, err := http.NewRequest(http.MethodGet, "http://"+adminAddr+"/admin/routes", nil)
+	if err != nil {
+		t.Fatalf("new admin routes request failed: %v", err)
+	}
+	req.Header.Set(adminTokenHeader, "test-token")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request admin routes failed: %v", err)
+	}
+	defer func(Body io.ReadCloser) {
+		_ = Body.Close()
+	}(resp.Body)
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("admin routes status got %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+
+	var routes []map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&routes); err != nil {
+		t.Fatalf("decode admin routes failed: %v", err)
+	}
+	if len(routes) == 0 {
+		t.Fatalf("admin routes is empty")
+	}
+
+	rawUpstreams, ok := routes[0]["upstreams"].([]any)
+	if !ok {
+		t.Fatalf("upstreams field missing or invalid: %#v", routes[0]["upstreams"])
+	}
+
+	result := make(map[string]map[string]any, len(rawUpstreams))
+	for _, raw := range rawUpstreams {
+		upstream, ok := raw.(map[string]any)
+		if !ok {
+			t.Fatalf("upstream item invalid: %#v", raw)
+		}
+		id, ok := upstream["id"].(string)
+		if !ok || id == "" {
+			t.Fatalf("upstream id missing or invalid: %#v", upstream)
+		}
+		activeHealth, ok := upstream["activeHealth"].(map[string]any)
+		if !ok {
+			continue
+		}
+		result[id] = activeHealth
+	}
+
+	return result
+}

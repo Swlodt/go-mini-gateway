@@ -71,6 +71,15 @@ func main() {
 		_, _ = fmt.Fprintf(w, "slow response from backend")
 	})
 
+	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		_, _ = fmt.Fprintln(w, "ok")
+	})
+
 	server := &http.Server{
 		Addr:    ":8082",
 		Handler: mux,

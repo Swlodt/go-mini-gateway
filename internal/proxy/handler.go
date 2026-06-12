@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"go-mini-gateway/internal/health"
 	"log"
 	"net"
 	"net/http"
@@ -32,6 +33,13 @@ type Options struct {
 type UpstreamOptions struct {
 	ID  string
 	URL string
+}
+
+type ActiveHealthOptions struct {
+	Enabled  bool
+	Path     string
+	Interval time.Duration
+	Timeout  time.Duration
 }
 
 type PassiveHealthOptions struct {
@@ -183,6 +191,36 @@ func New(options Options) (*Handler, error) {
 	return h, nil
 }
 
+func newActiveHealthChecker(routeID string, upstreamID string, target string, options ActiveHealthOptions) (*health.Checker, error) {
+	if !options.Enabled {
+		return nil, nil
+	}
+
+	if options.Path == "" {
+		options.Path = "/health"
+	}
+	if options.Interval <= 0 {
+		options.Interval = 5 * time.Second
+	}
+	if options.Timeout <= 0 {
+		options.Timeout = time.Second
+	}
+
+	checker, err := health.NewChecker(health.Options{
+		Name:     fmt.Sprintf("%s/%s", routeID, upstreamID),
+		Target:   target,
+		Path:     options.Path,
+		Interval: options.Interval,
+		Timeout:  options.Timeout,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("create active health checker for route %q upstream %q failed: %w", routeID, upstreamID, err)
+	}
+
+	checker.Start()
+	return checker, nil
+}
+
 func buildUpstreams(options Options) ([]*upstream, error) {
 	upstreamOptions := options.Upstreams
 	if len(upstreamOptions) == 0 && options.Target != "" {
@@ -211,6 +249,11 @@ func buildUpstreams(options Options) ([]*upstream, error) {
 		}
 		if targetURL.Scheme == "" || targetURL.Host == "" {
 			return nil, fmt.Errorf("invalid proxy upstream %q url %q: schema and host are required", id, option.URL)
+		}
+
+		activeHealth, err := newActiveHealthChecker(options.RouteID, id, option.URL, options.ActiveHealth)
+		if err != nil {
+			return nil, err
 		}
 
 		upstreams = append(upstreams, &upstream{
@@ -359,10 +402,17 @@ func (u *upstream) recordPassiveFailure(reason string) {
 }
 
 func (h *Handler) CloseIdleConnections() {
-	if h == nil || h.transport == nil {
+	if h == nil {
 		return
 	}
-	h.transport.CloseIdleConnections()
+	for _, item := range h.upstreams {
+		if item.activeHealth != nil {
+			item.activeHealth.Close()
+		}
+	}
+	if h.transport != nil {
+		h.transport.CloseIdleConnections()
+	}
 }
 
 func (h *Handler) UpstreamSnapshots() []UpstreamSnapshot {
@@ -376,9 +426,17 @@ func (h *Handler) UpstreamSnapshots() []UpstreamSnapshot {
 			ID:  item.id,
 			URL: item.url.String(),
 		}
+		if item.activeHealth != nil {
+			activeSnapshot := item.activeHealth.Snapshot()
+			snapshot.ActiveHealth = &activeSnapshot
+		}
 		if item.passiveHealth != nil {
 			passiveSnapshot := item.passiveHealth.snapshot(time.Now())
 			snapshot.PassiveHealth = &passiveSnapshot
+		}
+		if item.circuitBreaker != nil {
+			circuitBreakerSnapshot := item.circuitBreaker.snapshot(time.Now())
+			snapshot.CircuitBreaker = &circuitBreakerSnapshot
 		}
 		snapshots = append(snapshots, snapshot)
 	}
