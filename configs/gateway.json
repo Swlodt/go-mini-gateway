@@ -44,6 +44,12 @@
         "failureThreshold": 3,
         "successThreshold": 1,
         "unhealthyDuration": "10s"
+      },
+      "circuitBreaker": {
+        "enabled": true,
+        "failureThreshold": 5,
+        "openDuration": "10s",
+        "halfOpenMaxRequests": 2
       }
     }
   ]

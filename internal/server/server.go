@@ -169,6 +169,11 @@ func registerRoutes(mux *http.ServeMux, routes []config.RouteConfig) (*routeRegi
 			return nil, fmt.Errorf("create passive health options for route %q failed: %w", route.ID, err)
 		}
 
+		circuitBreaker, err := toProxyCircuitBreakerOptions(route.CircuitBreaker)
+		if err != nil {
+			return nil, fmt.Errorf("create circuit breaker options for route %q failed: %w", route.ID, err)
+		}
+
 		proxyHandler, err := proxy.New(proxy.Options{
 			RouteID:       route.ID,
 			Target:        route.Target,
@@ -285,6 +290,24 @@ func toProxyPassiveHealthOptions(passiveHealth config.PassiveHealthConfig) (prox
 		FailureThreshold:  passiveHealth.FailureThreshold,
 		SuccessThreshold:  passiveHealth.SuccessThreshold,
 		UnhealthyDuration: unhealthyDuration,
+	}, nil
+}
+
+func toProxyCircuitBreakerOptions(circuitBreaker config.CircuitBreakerConfig) (proxy.CircuitBreakerOptions, error) {
+	if !circuitBreaker.Enabled {
+		return proxy.CircuitBreakerOptions{}, nil
+	}
+
+	openDuration, err := circuitBreaker.OpenDurationDuration()
+	if err != nil {
+		return proxy.CircuitBreakerOptions{}, err
+	}
+
+	return proxy.CircuitBreakerOptions{
+		Enabled:             circuitBreaker.Enabled,
+		FailureThreshold:    circuitBreaker.FailureThreshold,
+		OpenDuration:        openDuration,
+		HalfOpenMaxRequests: circuitBreaker.HalfOpenMaxRequests,
 	}, nil
 }
 

@@ -20,11 +20,13 @@ const (
 )
 
 type Options struct {
-	RouteID       string
-	Target        string
-	Upstreams     []UpstreamOptions
-	StripPrefix   string
-	PassiveHealth PassiveHealthOptions
+	RouteID        string
+	Target         string
+	Upstreams      []UpstreamOptions
+	StripPrefix    string
+	ActiveHealth   ActiveHealthOptions
+	PassiveHealth  PassiveHealthOptions
+	CircuitBreaker CircuitBreakerOptions
 }
 
 type UpstreamOptions struct {
@@ -37,6 +39,13 @@ type PassiveHealthOptions struct {
 	FailureThreshold  int
 	SuccessThreshold  int
 	UnhealthyDuration time.Duration
+}
+
+type CircuitBreakerOptions struct {
+	Enabled             bool
+	FailureThreshold    int
+	OpenDuration        time.Duration
+	HalfOpenMaxRequests int
 }
 
 type PassiveHealthSnapshot struct {
@@ -54,16 +63,36 @@ type PassiveHealthSnapshot struct {
 	LastReason           string `json:"lastReason,omitempty"`
 }
 
+type CircuitBreakerSnapshot struct {
+	Enabled             bool   `json:"enabled"`
+	State               string `json:"state"`
+	Available           bool   `json:"available"`
+	ConsecutiveFailures int    `json:"consecutiveFailures"`
+	FailureThreshold    int    `json:"failureThreshold"`
+	OpenDuration        string `json:"openDuration"`
+	HalfOpenMaxRequests int    `json:"halfOpenMaxRequests"`
+	HalfOpenInFlight    int    `json:"halfOpenInFlight"`
+	HalfOpenSuccesses   int    `json:"halfOpenSuccesses"`
+	NextAttemptAt       string `json:"nextAttemptAt,omitempty"`
+	LastFailureAt       string `json:"lastFailureAt,omitempty"`
+	LastSuccessAt       string `json:"lastSuccessAt,omitempty"`
+	LastReason          string `json:"lastReason,omitempty"`
+}
+
 type UpstreamSnapshot struct {
-	ID            string                 `json:"id"`
-	URL           string                 `json:"url"`
-	PassiveHealth *PassiveHealthSnapshot `json:"passiveHealth,omitempty"`
+	ID             string                  `json:"id"`
+	URL            string                  `json:"url"`
+	ActiveHealth   *health.Snapshot        `json:"activeHealth,omitempty"`
+	PassiveHealth  *PassiveHealthSnapshot  `json:"passiveHealth,omitempty"`
+	CircuitBreaker *CircuitBreakerSnapshot `json:"circuitBreaker,omitempty"`
 }
 
 type upstream struct {
-	id            string
-	url           *url.URL
-	passiveHealth *passiveHealthState
+	id             string
+	url            *url.URL
+	activeHealth   *health.Checker
+	passiveHealth  *passiveHealthState
+	circuitBreaker *circuitBreakerState
 }
 
 type Handler struct {
@@ -185,9 +214,11 @@ func buildUpstreams(options Options) ([]*upstream, error) {
 		}
 
 		upstreams = append(upstreams, &upstream{
-			id:            id,
-			url:           targetURL,
-			passiveHealth: newPassiveHealthState(options.RouteID, id, options.PassiveHealth),
+			id:             id,
+			url:            targetURL,
+			activeHealth:   activeHealth,
+			passiveHealth:  newPassiveHealthState(options.RouteID, id, options.PassiveHealth),
+			circuitBreaker: newCircuitBreakerState(options.RouteID, id, options.CircuitBreaker),
 		})
 	}
 
@@ -258,7 +289,7 @@ func (h *Handler) selectUpstream() *upstream {
 	for i := 0; i < count; i++ {
 		index := int((start + uint64(i)) % uint64(count))
 		candidate := h.upstreams[index]
-		if candidate.available() {
+		if candidate.tryAcquire() {
 			return candidate
 		}
 	}
@@ -282,25 +313,49 @@ func upstreamIDOrEmpty(selected *upstream) string {
 	return selected.id
 }
 
-func (u *upstream) available() bool {
-	if u == nil || u.passiveHealth == nil {
-		return true
+func (u *upstream) tryAcquire() bool {
+	if u == nil {
+		return false
 	}
-	return u.passiveHealth.available(time.Now())
+
+	now := time.Now()
+	if u.activeHealth != nil && !u.activeHealth.Available() {
+		return false
+	}
+	if u.passiveHealth != nil && !u.passiveHealth.available(now) {
+		return false
+	}
+	if u.circuitBreaker != nil && !u.circuitBreaker.allow(now) {
+		return false
+	}
+
+	return true
 }
 
 func (u *upstream) recordPassiveSuccess() {
-	if u == nil || u.passiveHealth == nil {
+	if u == nil {
 		return
 	}
-	u.passiveHealth.recordSuccess(time.Now())
+	now := time.Now()
+	if u.passiveHealth != nil {
+		u.passiveHealth.recordSuccess(now)
+	}
+	if u.circuitBreaker != nil {
+		u.circuitBreaker.recordSuccess(now)
+	}
 }
 
 func (u *upstream) recordPassiveFailure(reason string) {
-	if u == nil || u.passiveHealth == nil {
+	if u == nil {
 		return
 	}
-	u.passiveHealth.recordFailure(time.Now(), reason)
+	now := time.Now()
+	if u.passiveHealth != nil {
+		u.passiveHealth.recordFailure(now, reason)
+	}
+	if u.circuitBreaker != nil {
+		u.circuitBreaker.recordFailure(now, reason)
+	}
 }
 
 func (h *Handler) CloseIdleConnections() {

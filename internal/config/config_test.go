@@ -915,3 +915,151 @@ func TestValidatePassiveHealth(t *testing.T) {
 		})
 	}
 }
+
+func TestLoadWithCircuitBreaker(t *testing.T) {
+	configContent := `{
+  "server": {
+    "addr": ":9000"
+  },
+  "admin": {
+    "enabled": false
+  },
+  "routes": [
+    {
+      "id": "demo",
+      "prefix": "/api/",
+      "target": "http://localhost:8081",
+      "circuitBreaker": {
+        "enabled": true,
+        "failureThreshold": 2,
+        "openDuration": "3s",
+        "halfOpenMaxRequests": 2
+      }
+    }
+  ]
+}`
+
+	cfg, err := Load(writeTempConfig(t, configContent))
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+
+	circuitBreaker := cfg.Routes[0].CircuitBreaker
+	if !circuitBreaker.Enabled {
+		t.Fatalf("circuit breaker should be enabled")
+	}
+	if circuitBreaker.FailureThreshold != 2 {
+		t.Fatalf("failureThreshold got %d, want 2", circuitBreaker.FailureThreshold)
+	}
+	if circuitBreaker.OpenDuration != "3s" {
+		t.Fatalf("openDuration got %q, want 3s", circuitBreaker.OpenDuration)
+	}
+	if circuitBreaker.HalfOpenMaxRequests != 2 {
+		t.Fatalf("halfOpenMaxRequests got %d, want 2", circuitBreaker.HalfOpenMaxRequests)
+	}
+}
+
+func TestLoadWithCircuitBreakerDefaults(t *testing.T) {
+	configContent := `{
+  "server": {
+    "addr": ":9000"
+  },
+  "admin": {
+    "enabled": false
+  },
+  "routes": [
+    {
+      "id": "demo",
+      "prefix": "/api/",
+      "target": "http://localhost:8081",
+      "circuitBreaker": {
+        "enabled": true
+      }
+    }
+  ]
+}`
+
+	cfg, err := Load(writeTempConfig(t, configContent))
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+
+	circuitBreaker := cfg.Routes[0].CircuitBreaker
+	if circuitBreaker.FailureThreshold != 5 {
+		t.Fatalf("failureThreshold got %d, want 5", circuitBreaker.FailureThreshold)
+	}
+	if circuitBreaker.OpenDuration != "10s" {
+		t.Fatalf("openDuration got %q, want 10s", circuitBreaker.OpenDuration)
+	}
+	if circuitBreaker.HalfOpenMaxRequests != 1 {
+		t.Fatalf("halfOpenMaxRequests got %d, want 1", circuitBreaker.HalfOpenMaxRequests)
+	}
+}
+
+func TestValidateCircuitBreaker(t *testing.T) {
+	tests := []struct {
+		name           string
+		circuitBreaker CircuitBreakerConfig
+		wantErr        bool
+	}{
+		{
+			name: "disabled",
+			circuitBreaker: CircuitBreakerConfig{
+				Enabled: false,
+			},
+		},
+		{
+			name: "valid",
+			circuitBreaker: CircuitBreakerConfig{
+				Enabled:             true,
+				FailureThreshold:    5,
+				OpenDuration:        "10s",
+				HalfOpenMaxRequests: 1,
+			},
+		},
+		{
+			name: "invalid failure threshold",
+			circuitBreaker: CircuitBreakerConfig{
+				Enabled:             true,
+				FailureThreshold:    0,
+				OpenDuration:        "10s",
+				HalfOpenMaxRequests: 1,
+			},
+			wantErr: true,
+		},
+		{
+			name: "invalid open duration",
+			circuitBreaker: CircuitBreakerConfig{
+				Enabled:             true,
+				FailureThreshold:    5,
+				OpenDuration:        "bad",
+				HalfOpenMaxRequests: 1,
+			},
+			wantErr: true,
+		},
+		{
+			name: "invalid half open max requests",
+			circuitBreaker: CircuitBreakerConfig{
+				Enabled:             true,
+				FailureThreshold:    5,
+				OpenDuration:        "10s",
+				HalfOpenMaxRequests: 0,
+			},
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateCircuitBreaker("test", tt.circuitBreaker)
+
+			if tt.wantErr && err == nil {
+				t.Fatalf("expected error, got nil")
+			}
+
+			if !tt.wantErr && err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+		})
+	}
+}

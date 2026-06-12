@@ -97,12 +97,17 @@ func (s *Server) handleAdminRoutes(w http.ResponseWriter, r *http.Request) {
 	routes := make([]routeDTO, 0, len(s.routes))
 
 	for _, route := range s.routes {
+		upstreams := route.upstreams
+		if route.proxyHandler != nil {
+			upstreams = route.proxyHandler.UpstreamSnapshots()
+		}
+
 		routes = append(routes, routeDTO{
 			ID:                 route.id,
 			Prefix:             route.prefix,
 			StripPrefix:        route.stripPrefix,
 			Target:             route.target,
-			Upstreams:          route.upstreams,
+			Upstreams:          upstreams,
 			RateLimitRPS:       route.rateLimitRPS,
 			RateLimitBurst:     route.rateLimitBurst,
 			MaxConcurrency:     route.maxConcurrency,

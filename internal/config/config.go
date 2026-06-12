@@ -40,16 +40,17 @@ type AdminConfig struct {
 }
 
 type RouteConfig struct {
-	ID             string              `json:"id"`
-	Prefix         string              `json:"prefix"`
-	StripPrefix    string              `json:"stripPrefix"`
-	Target         string              `json:"target"`
-	Upstreams      []UpstreamConfig    `json:"upstreams"`
-	RateLimitRPS   int                 `json:"rateLimitRPS"`
-	RateLimitBurst int                 `json:"rateLimitBurst"`
-	MaxConcurrency int                 `json:"maxConcurrency"`
-	HealthCheck    HealthCheckConfig   `json:"healthCheck"`
-	PassiveHealth  PassiveHealthConfig `json:"passiveHealth"`
+	ID             string               `json:"id"`
+	Prefix         string               `json:"prefix"`
+	StripPrefix    string               `json:"stripPrefix"`
+	Target         string               `json:"target"`
+	Upstreams      []UpstreamConfig     `json:"upstreams"`
+	RateLimitRPS   int                  `json:"rateLimitRPS"`
+	RateLimitBurst int                  `json:"rateLimitBurst"`
+	MaxConcurrency int                  `json:"maxConcurrency"`
+	HealthCheck    HealthCheckConfig    `json:"healthCheck"`
+	PassiveHealth  PassiveHealthConfig  `json:"passiveHealth"`
+	CircuitBreaker CircuitBreakerConfig `json:"circuitBreaker"`
 }
 
 type UpstreamConfig struct {
@@ -69,6 +70,13 @@ type PassiveHealthConfig struct {
 	FailureThreshold  int    `json:"failureThreshold"`
 	SuccessThreshold  int    `json:"successThreshold"`
 	UnhealthyDuration string `json:"unhealthyDuration"`
+}
+
+type CircuitBreakerConfig struct {
+	Enabled             bool   `json:"enabled"`
+	FailureThreshold    int    `json:"failureThreshold"`
+	OpenDuration        string `json:"openDuration"`
+	HalfOpenMaxRequests int    `json:"halfOpenMaxRequests"`
 }
 
 func (c *Config) Addr() string {
@@ -184,6 +192,18 @@ func normalize(cfg *Config) {
 			}
 			if cfg.Routes[i].PassiveHealth.UnhealthyDuration == "" {
 				cfg.Routes[i].PassiveHealth.UnhealthyDuration = "10s"
+			}
+		}
+
+		if cfg.Routes[i].CircuitBreaker.Enabled {
+			if cfg.Routes[i].CircuitBreaker.FailureThreshold <= 0 {
+				cfg.Routes[i].CircuitBreaker.FailureThreshold = 5
+			}
+			if cfg.Routes[i].CircuitBreaker.OpenDuration == "" {
+				cfg.Routes[i].CircuitBreaker.OpenDuration = "10s"
+			}
+			if cfg.Routes[i].CircuitBreaker.HalfOpenMaxRequests <= 0 {
+				cfg.Routes[i].CircuitBreaker.HalfOpenMaxRequests = 1
 			}
 		}
 
@@ -317,6 +337,9 @@ func validate(cfg *Config) error {
 			return err
 		}
 		if err := validatePassiveHealth(fmt.Sprintf("route[%d]", i), route.PassiveHealth); err != nil {
+			return err
+		}
+		if err := validateCircuitBreaker(fmt.Sprintf("route[%d]", i), route.CircuitBreaker); err != nil {
 			return err
 		}
 	}
@@ -455,6 +478,35 @@ func validatePassiveHealth(scope string, passiveHealth PassiveHealthConfig) erro
 	return nil
 }
 
+func validateCircuitBreaker(scope string, circuitBreaker CircuitBreakerConfig) error {
+	if !circuitBreaker.Enabled {
+		return nil
+	}
+
+	if circuitBreaker.FailureThreshold <= 0 {
+		return fmt.Errorf("%s.circuitBreaker.failureThreshold must be > 0", scope)
+	}
+	if circuitBreaker.FailureThreshold > 100000 {
+		return fmt.Errorf("%s.circuitBreaker.failureThreshold is too large: %d", scope, circuitBreaker.FailureThreshold)
+	}
+	if circuitBreaker.HalfOpenMaxRequests <= 0 {
+		return fmt.Errorf("%s.circuitBreaker.halfOpenMaxRequests must be > 0", scope)
+	}
+	if circuitBreaker.HalfOpenMaxRequests > 100000 {
+		return fmt.Errorf("%s.circuitBreaker.halfOpenMaxRequests is too large: %d", scope, circuitBreaker.HalfOpenMaxRequests)
+	}
+
+	duration, err := circuitBreaker.OpenDurationDuration()
+	if err != nil {
+		return fmt.Errorf("%s.%w", scope, err)
+	}
+	if duration <= 0 {
+		return fmt.Errorf("%s.circuitBreaker.openDuration must be > 0", scope)
+	}
+
+	return nil
+}
+
 func validateAdmin(cfg *Config) error {
 	if !cfg.Admin.Enabled {
 		if cfg.Admin.MetricsRequireToken {
@@ -504,6 +556,17 @@ func (p PassiveHealthConfig) UnhealthyDurationDuration() (time.Duration, error) 
 	d, err := time.ParseDuration(p.UnhealthyDuration)
 	if err != nil {
 		return 0, fmt.Errorf("invalid passiveHealth.unhealthyDuration %q: %w", p.UnhealthyDuration, err)
+	}
+	return d, nil
+}
+
+func (c CircuitBreakerConfig) OpenDurationDuration() (time.Duration, error) {
+	if c.OpenDuration == "" {
+		return 10 * time.Second, nil
+	}
+	d, err := time.ParseDuration(c.OpenDuration)
+	if err != nil {
+		return 0, fmt.Errorf("invalid circuitBreaker.openDuration %q: %w", c.OpenDuration, err)
 	}
 	return d, nil
 }
