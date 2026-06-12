@@ -10,8 +10,9 @@
   "admin": {
     "enabled": true,
     "addr": "127.0.0.1:9001",
-    "token": "${GATEWAY_ADMIN_TOKEN}",
-    "metricsRequireToken": false
+    "token": "${GATEWAY_ADMIN_TOKEN:dev-token}",
+    "metricsRequireToken": false,
+    "pprofEnabled": true
   },
   "routes": [
     {

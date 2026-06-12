@@ -6,6 +6,7 @@ import (
 	"go-mini-gateway/internal/health"
 	"go-mini-gateway/internal/ratelimit"
 	"net/http"
+	"net/http/pprof"
 )
 
 type routeDTO struct {
@@ -57,6 +58,9 @@ func (s *Server) registerAdminRoutes(mux *http.ServeMux) {
 		mux.Handle("/admin/health", s.adminAuthMiddleware(http.HandlerFunc(s.handleAdminHealth)))
 		mux.Handle("/admin/stats", s.adminAuthMiddleware(http.HandlerFunc(s.handleAdminStats)))
 		mux.Handle("/admin/metrics", s.adminAuthMiddleware(http.HandlerFunc(s.handleAdminMetrics)))
+		if s.pprofEnabled {
+			s.registerPprofRoutes(mux)
+		}
 	}
 
 	metricsHandler := http.HandlerFunc(s.handlePrometheusMetrics)
@@ -65,6 +69,21 @@ func (s *Server) registerAdminRoutes(mux *http.ServeMux) {
 		return
 	}
 	mux.Handle("/metrics", metricsHandler)
+}
+
+func (s *Server) registerPprofRoutes(mux *http.ServeMux) {
+	mux.Handle("/debug/pprof/", s.adminAuthMiddleware(http.HandlerFunc(pprof.Index)))
+	mux.Handle("/debug/pprof/cmdline", s.adminAuthMiddleware(http.HandlerFunc(pprof.Cmdline)))
+	mux.Handle("/debug/pprof/profile", s.adminAuthMiddleware(http.HandlerFunc(pprof.Profile)))
+	mux.Handle("/debug/pprof/symbol", s.adminAuthMiddleware(http.HandlerFunc(pprof.Symbol)))
+	mux.Handle("/debug/pprof/trace", s.adminAuthMiddleware(http.HandlerFunc(pprof.Trace)))
+
+	mux.Handle("/debug/pprof/allocs", s.adminAuthMiddleware(pprof.Handler("allocs")))
+	mux.Handle("/debug/pprof/block", s.adminAuthMiddleware(pprof.Handler("block")))
+	mux.Handle("/debug/pprof/goroutine", s.adminAuthMiddleware(pprof.Handler("goroutine")))
+	mux.Handle("/debug/pprof/heap", s.adminAuthMiddleware(pprof.Handler("heap")))
+	mux.Handle("/debug/pprof/mutex", s.adminAuthMiddleware(pprof.Handler("mutex")))
+	mux.Handle("/debug/pprof/threadcreate", s.adminAuthMiddleware(pprof.Handler("threadcreate")))
 }
 
 func (s *Server) handleAdminRoutes(w http.ResponseWriter, r *http.Request) {

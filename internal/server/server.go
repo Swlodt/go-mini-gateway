@@ -31,6 +31,7 @@ type Server struct {
 	adminEnabled        bool
 	adminToken          string
 	metricsRequireToken bool
+	pprofEnabled        bool
 }
 
 type httpServerTarget struct {
@@ -124,6 +125,7 @@ func New(cfg *config.Config) (*Server, error) {
 		adminEnabled:        cfg.Admin.Enabled,
 		adminToken:          cfg.Admin.Token,
 		metricsRequireToken: cfg.Admin.MetricsRequireToken,
+		pprofEnabled:        cfg.Admin.PprofEnabled,
 	}
 
 	srv.httpServer = &http.Server{

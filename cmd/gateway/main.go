@@ -12,6 +12,11 @@ import (
 )
 
 func main() {
+	// 记录所有阻塞事件，开销较高
+	//runtime.SetBlockProfileRate(1)
+	// 记录所有 mutex 竞争事件，开销较高
+	//runtime.SetMutexProfileFraction(1)
+
 	configPath := flag.String("config", "configs/gateway.json", "gateway config file path")
 	flag.Parse()
 	cfg, err := config.Load(*configPath)

@@ -689,3 +689,65 @@ func TestGatewayMetricsRecordsRoute(t *testing.T) {
 		t.Fatalf("demo.requests got %f, want >= 1", requests)
 	}
 }
+
+func TestGatewayPprofEnabled(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer backend.Close()
+
+	mainAddr := freeLocalAddr(t)
+	adminAddr := freeLocalAddr(t)
+
+	cfg := newTestGatewayConfig(mainAddr, adminAddr, backend.URL)
+	cfg.Admin.PprofEnabled = true
+
+	startTestGateway(t, cfg)
+
+	req, err := http.NewRequest(http.MethodGet, "http://"+adminAddr+"/debug/pprof/", nil)
+	if err != nil {
+		t.Fatalf("new request failed: %v", err)
+	}
+	req.Header.Set(adminTokenHeader, "test-token")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request pprof failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status got %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+}
+
+func TestGatewayPprofDisabled(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer backend.Close()
+
+	mainAddr := freeLocalAddr(t)
+	adminAddr := freeLocalAddr(t)
+
+	cfg := newTestGatewayConfig(mainAddr, adminAddr, backend.URL)
+	cfg.Admin.PprofEnabled = false
+
+	startTestGateway(t, cfg)
+
+	req, err := http.NewRequest(http.MethodGet, "http://"+adminAddr+"/debug/pprof/", nil)
+	if err != nil {
+		t.Fatalf("new request failed: %v", err)
+	}
+	req.Header.Set(adminTokenHeader, "test-token")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request pprof failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("status got %d, want %d", resp.StatusCode, http.StatusNotFound)
+	}
+}

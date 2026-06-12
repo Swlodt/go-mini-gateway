@@ -36,6 +36,7 @@ type AdminConfig struct {
 	Addr                string `json:"addr"`
 	Token               string `json:"token"`
 	MetricsRequireToken bool   `json:"metricsRequireToken"`
+	PprofEnabled        bool   `json:"pprofEnabled"`
 }
 
 type RouteConfig struct {
