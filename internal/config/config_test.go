@@ -109,6 +109,18 @@ func TestLoad(t *testing.T) {
 		t.Fatalf("route target got %q, want http://localhost:8081", route.Target)
 	}
 
+	if len(route.Upstreams) != 1 {
+		t.Fatalf("route upstreams length got %d, want 1", len(route.Upstreams))
+	}
+
+	if route.Upstreams[0].ID != "default" {
+		t.Fatalf("route upstream id got %q, want default", route.Upstreams[0].ID)
+	}
+
+	if route.Upstreams[0].URL != "http://localhost:8081" {
+		t.Fatalf("route upstream url got %q, want http://localhost:8081", route.Upstreams[0].URL)
+	}
+
 	if route.HealthCheck.Path != "/health" {
 		t.Fatalf("health path got %q, want /health", route.HealthCheck.Path)
 	}
@@ -125,6 +137,63 @@ func writeTempConfig(t *testing.T, content string) string {
 	}
 
 	return path
+}
+
+func TestLoadWithUpstreams(t *testing.T) {
+	t.Setenv("TEST_GATEWAY_BACKEND1", "http://localhost:8081")
+	t.Setenv("TEST_GATEWAY_BACKEND2", "http://localhost:8082")
+
+	configContent := `{
+  "server": {
+    "addr": ":9000"
+  },
+  "admin": {
+    "enabled": false
+  },
+  "routes": [
+    {
+      "id": "demo",
+      "prefix": "/api/",
+      "stripPrefix": "/api",
+      "upstreams": [
+        {
+          "id": "backend-1",
+          "url": "${TEST_GATEWAY_BACKEND1}"
+        },
+        {
+          "id": "backend-2",
+          "url": "${TEST_GATEWAY_BACKEND2}"
+        }
+      ]
+    }
+  ]
+}`
+
+	cfg, err := Load(writeTempConfig(t, configContent))
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+
+	if len(cfg.Routes) != 1 {
+		t.Fatalf("routes length got %d, want 1", len(cfg.Routes))
+	}
+
+	route := cfg.Routes[0]
+	if route.Target != "http://localhost:8081" {
+		t.Fatalf("route target got %q, want first upstream url", route.Target)
+	}
+
+	if len(route.Upstreams) != 2 {
+		t.Fatalf("upstreams length got %d, want 2", len(route.Upstreams))
+	}
+
+	if route.Upstreams[0].ID != "backend-1" || route.Upstreams[0].URL != "http://localhost:8081" {
+		t.Fatalf("first upstream got %+v", route.Upstreams[0])
+	}
+
+	if route.Upstreams[1].ID != "backend-2" || route.Upstreams[1].URL != "http://localhost:8082" {
+		t.Fatalf("second upstream got %+v", route.Upstreams[1])
+	}
 }
 
 func TestLoadErrors(t *testing.T) {
@@ -198,6 +267,47 @@ func TestLoadErrors(t *testing.T) {
       "id": "demo2",
       "prefix": "/api/",
       "target": "http://localhost:8082"
+    }
+  ]
+}`,
+		},
+		{
+			name: "duplicate upstream id",
+			content: `{
+  "server": {
+    "addr": ":9000"
+  },
+  "admin": {
+    "enabled": false
+  },
+  "routes": [
+    {
+      "id": "demo",
+      "prefix": "/api/",
+      "upstreams": [
+        {"id": "backend", "url": "http://localhost:8081"},
+        {"id": "backend", "url": "http://localhost:8082"}
+      ]
+    }
+  ]
+}`,
+		},
+		{
+			name: "invalid upstream url",
+			content: `{
+  "server": {
+    "addr": ":9000"
+  },
+  "admin": {
+    "enabled": false
+  },
+  "routes": [
+    {
+      "id": "demo",
+      "prefix": "/api/",
+      "upstreams": [
+        {"id": "backend", "url": "localhost:8081"}
+      ]
     }
   ]
 }`,

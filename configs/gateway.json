@@ -20,6 +20,16 @@
       "prefix": "/api/",
       "stripPrefix": "/api",
       "target": "${DEMO_BACKEND_URL:http://localhost:8081}",
+      "upstreams": [
+        {
+          "id": "backend-1",
+          "url": "${DEMO_BACKEND_URL:http://localhost:8081}"
+        },
+        {
+          "id": "backend-2",
+          "url": "${DEMO_BACKEND2_URL:http://localhost:8082}"
+        }
+      ],
       "rateLimitRPS": 0,
       "rateLimitBurst": 0,
       "maxConcurrency": 0,

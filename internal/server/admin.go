@@ -4,21 +4,23 @@ import (
 	"encoding/json"
 	"go-mini-gateway/internal/concurrency"
 	"go-mini-gateway/internal/health"
+	"go-mini-gateway/internal/proxy"
 	"go-mini-gateway/internal/ratelimit"
 	"net/http"
 	"net/http/pprof"
 )
 
 type routeDTO struct {
-	ID                 string `json:"id"`
-	Prefix             string `json:"prefix"`
-	StripPrefix        string `json:"stripPrefix"`
-	Target             string `json:"target"`
-	RateLimitRPS       int    `json:"rateLimitRPS"`
-	RateLimitBurst     int    `json:"rateLimitBurst"`
-	MaxConcurrency     int    `json:"maxConcurrency"`
-	HealthCheckEnabled bool   `json:"healthCheckEnabled"`
-	HealthCheckPath    string `json:"healthCheckPath,omitempty"`
+	ID                 string                   `json:"id"`
+	Prefix             string                   `json:"prefix"`
+	StripPrefix        string                   `json:"stripPrefix"`
+	Target             string                   `json:"target"`
+	Upstreams          []proxy.UpstreamSnapshot `json:"upstreams"`
+	RateLimitRPS       int                      `json:"rateLimitRPS"`
+	RateLimitBurst     int                      `json:"rateLimitBurst"`
+	MaxConcurrency     int                      `json:"maxConcurrency"`
+	HealthCheckEnabled bool                     `json:"healthCheckEnabled"`
+	HealthCheckPath    string                   `json:"healthCheckPath,omitempty"`
 }
 
 type healthDTO struct {
@@ -100,6 +102,7 @@ func (s *Server) handleAdminRoutes(w http.ResponseWriter, r *http.Request) {
 			Prefix:             route.prefix,
 			StripPrefix:        route.stripPrefix,
 			Target:             route.target,
+			Upstreams:          route.upstreams,
 			RateLimitRPS:       route.rateLimitRPS,
 			RateLimitBurst:     route.rateLimitBurst,
 			MaxConcurrency:     route.maxConcurrency,
@@ -160,10 +163,12 @@ func (s *Server) handleAdminStats(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if s.globalRateLimiter != nil {
-		resp.Global.RateLimit = new(s.globalRateLimiter.Snapshot())
+		snapshot := s.globalRateLimiter.Snapshot()
+		resp.Global.RateLimit = &snapshot
 	}
 	if s.globalConcurrencyLimiter != nil {
-		resp.Global.Concurrency = new(s.globalConcurrencyLimiter.Snapshot())
+		snapshot := s.globalConcurrencyLimiter.Snapshot()
+		resp.Global.Concurrency = &snapshot
 	}
 
 	for _, route := range s.routes {
@@ -171,13 +176,16 @@ func (s *Server) handleAdminStats(w http.ResponseWriter, r *http.Request) {
 			ID: route.id,
 		}
 		if route.rateLimiter != nil {
-			item.RateLimit = new(route.rateLimiter.Snapshot())
+			snapshot := route.rateLimiter.Snapshot()
+			item.RateLimit = &snapshot
 		}
 		if route.concurrencyLimiter != nil {
-			item.Concurrency = new(route.concurrencyLimiter.Snapshot())
+			snapshot := route.concurrencyLimiter.Snapshot()
+			item.Concurrency = &snapshot
 		}
 		if route.healthChecker != nil {
-			item.Health = new(route.healthChecker.Snapshot())
+			snapshot := route.healthChecker.Snapshot()
+			item.Health = &snapshot
 		}
 		resp.Routes = append(resp.Routes, item)
 	}

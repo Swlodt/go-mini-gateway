@@ -55,6 +55,18 @@ func expandConfigEnv(cfg *Config) error {
 			return fmt.Errorf("expand routes[%d].target failed: %w", i, err)
 		}
 
+		for j := range cfg.Routes[i].Upstreams {
+			cfg.Routes[i].Upstreams[j].ID, err = expandEnvString(cfg.Routes[i].Upstreams[j].ID)
+			if err != nil {
+				return fmt.Errorf("expand routes[%d].upstreams[%d].id failed: %w", i, j, err)
+			}
+
+			cfg.Routes[i].Upstreams[j].URL, err = expandEnvString(cfg.Routes[i].Upstreams[j].URL)
+			if err != nil {
+				return fmt.Errorf("expand routes[%d].upstreams[%d].url failed: %w", i, j, err)
+			}
+		}
+
 		cfg.Routes[i].HealthCheck.Path, err = expandEnvString(cfg.Routes[i].HealthCheck.Path)
 		if err != nil {
 			return fmt.Errorf("expand routes[%d].healthCheck.path failed: %w", i, err)

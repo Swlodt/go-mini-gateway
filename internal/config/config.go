@@ -42,12 +42,18 @@ type AdminConfig struct {
 type RouteConfig struct {
 	ID             string            `json:"id"`
 	Prefix         string            `json:"prefix"`
-	StripPrefix    string            `json:"StripPrefix"`
+	StripPrefix    string            `json:"stripPrefix"`
 	Target         string            `json:"target"`
+	Upstreams      []UpstreamConfig  `json:"upstreams"`
 	RateLimitRPS   int               `json:"rateLimitRPS"`
 	RateLimitBurst int               `json:"rateLimitBurst"`
 	MaxConcurrency int               `json:"maxConcurrency"`
 	HealthCheck    HealthCheckConfig `json:"healthCheck"`
+}
+
+type UpstreamConfig struct {
+	ID  string `json:"id"`
+	URL string `json:"url"`
 }
 
 type HealthCheckConfig struct {
@@ -134,7 +140,28 @@ func normalize(cfg *Config) {
 		cfg.Routes[i].ID = strings.TrimSpace(cfg.Routes[i].ID)
 		cfg.Routes[i].Prefix = normalizePrefix(cfg.Routes[i].Prefix)
 		cfg.Routes[i].StripPrefix = normalizeStripPrefix(cfg.Routes[i].StripPrefix)
-		cfg.Routes[i].Target = strings.TrimRight(strings.TrimSpace(cfg.Routes[i].Target), "/")
+		cfg.Routes[i].Target = normalizeTargetURL(cfg.Routes[i].Target)
+
+		for j := range cfg.Routes[i].Upstreams {
+			cfg.Routes[i].Upstreams[j].ID = strings.TrimSpace(cfg.Routes[i].Upstreams[j].ID)
+			if cfg.Routes[i].Upstreams[j].ID == "" {
+				cfg.Routes[i].Upstreams[j].ID = fmt.Sprintf("upstream-%d", j+1)
+			}
+			cfg.Routes[i].Upstreams[j].URL = normalizeTargetURL(cfg.Routes[i].Upstreams[j].URL)
+		}
+
+		if len(cfg.Routes[i].Upstreams) == 0 && cfg.Routes[i].Target != "" {
+			cfg.Routes[i].Upstreams = []UpstreamConfig{
+				{
+					ID:  "default",
+					URL: cfg.Routes[i].Target,
+				},
+			}
+		}
+
+		if cfg.Routes[i].Target == "" && len(cfg.Routes[i].Upstreams) > 0 {
+			cfg.Routes[i].Target = cfg.Routes[i].Upstreams[0].URL
+		}
 
 		if cfg.Routes[i].RateLimitRPS > 0 && cfg.Routes[i].RateLimitBurst <= 0 {
 			cfg.Routes[i].RateLimitBurst = cfg.Routes[i].RateLimitRPS
@@ -156,6 +183,10 @@ func normalize(cfg *Config) {
 			}
 		}
 	}
+}
+
+func normalizeTargetURL(target string) string {
+	return strings.TrimRight(strings.TrimSpace(target), "/")
 }
 
 func normalizePrefix(prefix string) string {
@@ -240,17 +271,22 @@ func validate(cfg *Config) error {
 			)
 		}
 
+		if len(route.Upstreams) == 0 {
+			return fmt.Errorf("routes[%d] requires target or upstreams", i)
+		}
+
 		if route.Target == "" {
 			return fmt.Errorf("routes[%d].target is required", i)
 		}
 
-		targetURL, err := url.Parse(route.Target)
-		if err != nil {
-			return fmt.Errorf("routes[%d].target %q is invalid: %w", i, route.Target, err)
+		if err := validateTargetURL(fmt.Sprintf("routes[%d].target", i), route.Target); err != nil {
+			return err
 		}
-		if targetURL.Scheme == "" || targetURL.Host == "" {
-			return fmt.Errorf("routes[%d].target %q must contain scheme and host", i, route.Target)
+
+		if err := validateUpstreams(fmt.Sprintf("routes[%d]", i), route.Upstreams); err != nil {
+			return err
 		}
+
 		if err := validateRateLimit(fmt.Sprintf("route[%d]", i), route.RateLimitRPS, route.RateLimitBurst); err != nil {
 			return err
 		}
@@ -262,6 +298,43 @@ func validate(cfg *Config) error {
 		}
 	}
 
+	return nil
+}
+
+func validateUpstreams(scope string, upstreams []UpstreamConfig) error {
+	if len(upstreams) == 0 {
+		return fmt.Errorf("%s.upstreams must not be empty", scope)
+	}
+
+	ids := make(map[string]struct{}, len(upstreams))
+	for i, upstream := range upstreams {
+		if upstream.ID == "" {
+			return fmt.Errorf("%s.upstreams[%d].id is required", scope, i)
+		}
+		if _, exists := ids[upstream.ID]; exists {
+			return fmt.Errorf("%s duplicate upstream id %q", scope, upstream.ID)
+		}
+		ids[upstream.ID] = struct{}{}
+
+		if upstream.URL == "" {
+			return fmt.Errorf("%s.upstreams[%d].url is required", scope, i)
+		}
+		if err := validateTargetURL(fmt.Sprintf("%s.upstreams[%d].url", scope, i), upstream.URL); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func validateTargetURL(scope string, rawURL string) error {
+	parsedURL, err := url.Parse(rawURL)
+	if err != nil {
+		return fmt.Errorf("%s %q is invalid: %w", scope, rawURL, err)
+	}
+	if parsedURL.Scheme == "" || parsedURL.Host == "" {
+		return fmt.Errorf("%s %q must contain scheme and host", scope, rawURL)
+	}
 	return nil
 }
 

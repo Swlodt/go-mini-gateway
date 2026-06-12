@@ -751,3 +751,73 @@ func TestGatewayPprofDisabled(t *testing.T) {
 		t.Fatalf("status got %d, want %d", resp.StatusCode, http.StatusNotFound)
 	}
 }
+
+func TestGatewayRoundRobinUpstreams(t *testing.T) {
+	backend1 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Backend-ID", "backend-1")
+		_, _ = w.Write([]byte("backend-1"))
+	}))
+	defer backend1.Close()
+
+	backend2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Backend-ID", "backend-2")
+		_, _ = w.Write([]byte("backend-2"))
+	}))
+	defer backend2.Close()
+
+	mainAddr := freeLocalAddr(t)
+	adminAddr := freeLocalAddr(t)
+
+	cfg := newTestGatewayConfig(mainAddr, adminAddr, "")
+	cfg.Routes[0].Target = backend1.URL
+	cfg.Routes[0].Upstreams = []config.UpstreamConfig{
+		{
+			ID:  "backend-1",
+			URL: backend1.URL,
+		},
+		{
+			ID:  "backend-2",
+			URL: backend2.URL,
+		},
+	}
+
+	startTestGateway(t, cfg)
+
+	counts := map[string]int{}
+	upstreamHeaders := map[string]int{}
+	for i := 0; i < 6; i++ {
+		resp, err := http.Get("http://" + mainAddr + "/api/hello")
+		if err != nil {
+			t.Fatalf("request gateway failed: %v", err)
+		}
+
+		body, err := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		if err != nil {
+			t.Fatalf("read response body failed: %v", err)
+		}
+
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("status got %d, want %d", resp.StatusCode, http.StatusOK)
+		}
+
+		counts[string(body)]++
+		upstreamHeaders[resp.Header.Get("X-Gateway-Upstream")]++
+	}
+
+	if counts["backend-1"] != 3 {
+		t.Fatalf("backend-1 count got %d, want 3, counts=%v", counts["backend-1"], counts)
+	}
+
+	if counts["backend-2"] != 3 {
+		t.Fatalf("backend-2 count got %d, want 3, counts=%v", counts["backend-2"], counts)
+	}
+
+	if upstreamHeaders["backend-1"] != 3 {
+		t.Fatalf("X-Gateway-Upstream backend-1 count got %d, want 3, headers=%v", upstreamHeaders["backend-1"], upstreamHeaders)
+	}
+
+	if upstreamHeaders["backend-2"] != 3 {
+		t.Fatalf("X-Gateway-Upstream backend-2 count got %d, want 3, headers=%v", upstreamHeaders["backend-2"], upstreamHeaders)
+	}
+}

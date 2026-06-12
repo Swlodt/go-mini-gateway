@@ -51,6 +51,7 @@ type routeRuntime struct {
 	prefix         string
 	stripPrefix    string
 	target         string
+	upstreams      []proxy.UpstreamSnapshot
 	rateLimitRPS   int
 	rateLimitBurst int
 	maxConcurrency int
@@ -166,6 +167,7 @@ func registerRoutes(mux *http.ServeMux, routes []config.RouteConfig) (*routeRegi
 		proxyHandler, err := proxy.New(proxy.Options{
 			RouteID:     route.ID,
 			Target:      route.Target,
+			Upstreams:   toProxyUpstreamOptions(route.Upstreams),
 			StripPrefix: route.StripPrefix,
 		})
 		if err != nil {
@@ -177,6 +179,7 @@ func registerRoutes(mux *http.ServeMux, routes []config.RouteConfig) (*routeRegi
 			prefix:             route.Prefix,
 			stripPrefix:        route.StripPrefix,
 			target:             route.Target,
+			upstreams:          proxyHandler.UpstreamSnapshots(),
 			rateLimitRPS:       route.RateLimitRPS,
 			rateLimitBurst:     route.RateLimitBurst,
 			maxConcurrency:     route.MaxConcurrency,
@@ -259,6 +262,21 @@ func registerRoutes(mux *http.ServeMux, routes []config.RouteConfig) (*routeRegi
 		result.proxyHandlers = append(result.proxyHandlers, proxyHandler)
 	}
 	return result, nil
+}
+
+func toProxyUpstreamOptions(upstreams []config.UpstreamConfig) []proxy.UpstreamOptions {
+	if len(upstreams) == 0 {
+		return nil
+	}
+
+	options := make([]proxy.UpstreamOptions, 0, len(upstreams))
+	for _, upstream := range upstreams {
+		options = append(options, proxy.UpstreamOptions{
+			ID:  upstream.ID,
+			URL: upstream.URL,
+		})
+	}
+	return options
 }
 
 func (s *Server) Start() error {
