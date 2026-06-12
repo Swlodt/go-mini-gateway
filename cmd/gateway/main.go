@@ -29,7 +29,7 @@ func main() {
 		log.Fatalf("invalid shutdown timeout: %v", err)
 	}
 
-	s, err := server.New(cfg)
+	s, err := server.NewWithConfigPath(cfg, *configPath)
 	if err != nil {
 		log.Fatalf("create gateway failed: %v", err)
 	}

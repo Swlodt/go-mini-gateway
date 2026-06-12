@@ -13,12 +13,18 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 )
 
 type Server struct {
+	mu sync.RWMutex
+
 	httpServer      *http.Server
 	adminHTTPServer *http.Server
+	mainHandler     *reloadableHandler
+	configPath      string
+	currentConfig   *config.Config
 
 	routes                   []*routeRuntime
 	proxyHandlers            []*proxy.Handler
@@ -37,6 +43,16 @@ type Server struct {
 type httpServerTarget struct {
 	name   string
 	server *http.Server
+}
+
+type runtimeBundle struct {
+	handler                  http.Handler
+	routes                   []*routeRuntime
+	proxyHandlers            []*proxy.Handler
+	rateLimiters             []*ratelimit.TokenBucket
+	healthCheckers           []*health.Checker
+	globalRateLimiter        *ratelimit.TokenBucket
+	globalConcurrencyLimiter *concurrency.Limiter
 }
 
 type routeRegisterResult struct {
@@ -66,12 +82,68 @@ type routeRuntime struct {
 }
 
 func New(cfg *config.Config) (*Server, error) {
-	requestTimeout, err := cfg.RequestTimeoutDuration()
+	return NewWithConfigPath(cfg, "")
+}
+
+func NewWithConfigPath(cfg *config.Config, configPath string) (*Server, error) {
+	metricsRegistry := metrics.NewRegistry()
+
+	runtime, err := buildRuntime(cfg, metricsRegistry)
 	if err != nil {
 		return nil, err
 	}
 
-	metricsRegistry := metrics.NewRegistry()
+	reloadableMainHandler := newReloadableHandler(runtime.handler)
+
+	srv := &Server{
+		mainHandler:              reloadableMainHandler,
+		configPath:               configPath,
+		currentConfig:            cfg,
+		routes:                   runtime.routes,
+		proxyHandlers:            runtime.proxyHandlers,
+		rateLimiters:             runtime.rateLimiters,
+		healthCheckers:           runtime.healthCheckers,
+		globalRateLimiter:        runtime.globalRateLimiter,
+		globalConcurrencyLimiter: runtime.globalConcurrencyLimiter,
+		metricsRegistry:          metricsRegistry,
+
+		adminEnabled:        cfg.Admin.Enabled,
+		adminToken:          cfg.Admin.Token,
+		metricsRequireToken: cfg.Admin.MetricsRequireToken,
+		pprofEnabled:        cfg.Admin.PprofEnabled,
+	}
+
+	srv.httpServer = &http.Server{
+		Addr:              cfg.Addr(),
+		Handler:           reloadableMainHandler,
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+
+	if cfg.Admin.Enabled {
+		adminMux := http.NewServeMux()
+		srv.registerAdminRoutes(adminMux)
+
+		var adminHandler http.Handler = adminMux
+
+		// 管理接口不走业务全局限流、不走业务全局并发限制。
+		// 但仍然记录访问日志和 metrics。
+		adminHandler = accessLogMiddleware(adminHandler, metricsRegistry)
+
+		srv.adminHTTPServer = &http.Server{
+			Addr:              cfg.Admin.Addr,
+			Handler:           adminHandler,
+			ReadHeaderTimeout: 5 * time.Second,
+		}
+	}
+
+	return srv, nil
+}
+
+func buildRuntime(cfg *config.Config, metricsRegistry *metrics.Registry) (*runtimeBundle, error) {
+	requestTimeout, err := cfg.RequestTimeoutDuration()
+	if err != nil {
+		return nil, err
+	}
 
 	mainMux := http.NewServeMux()
 
@@ -114,45 +186,15 @@ func New(cfg *config.Config) (*Server, error) {
 
 	mainHandler = accessLogMiddleware(mainHandler, metricsRegistry)
 
-	srv := &Server{
+	return &runtimeBundle{
+		handler:                  mainHandler,
 		routes:                   routeResult.routes,
 		proxyHandlers:            routeResult.proxyHandlers,
 		rateLimiters:             routeResult.rateLimiters,
 		healthCheckers:           routeResult.healthCheckers,
 		globalRateLimiter:        globalRateLimiter,
 		globalConcurrencyLimiter: globalConcurrencyLimiter,
-		metricsRegistry:          metricsRegistry,
-
-		adminEnabled:        cfg.Admin.Enabled,
-		adminToken:          cfg.Admin.Token,
-		metricsRequireToken: cfg.Admin.MetricsRequireToken,
-		pprofEnabled:        cfg.Admin.PprofEnabled,
-	}
-
-	srv.httpServer = &http.Server{
-		Addr:              cfg.Addr(),
-		Handler:           mainHandler,
-		ReadHeaderTimeout: 5 * time.Second,
-	}
-
-	if cfg.Admin.Enabled {
-		adminMux := http.NewServeMux()
-		srv.registerAdminRoutes(adminMux)
-
-		var adminHandler http.Handler = adminMux
-
-		// 管理接口不走业务全局限流、不走业务全局并发限制。
-		// 但仍然记录访问日志和 metrics。
-		adminHandler = accessLogMiddleware(adminHandler, metricsRegistry)
-
-		srv.adminHTTPServer = &http.Server{
-			Addr:              cfg.Admin.Addr,
-			Handler:           adminHandler,
-			ReadHeaderTimeout: 5 * time.Second,
-		}
-	}
-
-	return srv, nil
+	}, nil
 }
 
 func registerRoutes(mux *http.ServeMux, routes []config.RouteConfig) (*routeRegisterResult, error) {
@@ -408,13 +450,23 @@ func (s *Server) Close() error {
 }
 
 func (s *Server) CloseResource() {
-	for _, proxyHandler := range s.proxyHandlers {
+	s.mu.RLock()
+	proxyHandlers := append([]*proxy.Handler(nil), s.proxyHandlers...)
+	rateLimiters := append([]*ratelimit.TokenBucket(nil), s.rateLimiters...)
+	healthCheckers := append([]*health.Checker(nil), s.healthCheckers...)
+	s.mu.RUnlock()
+
+	closeRuntimeResources(proxyHandlers, rateLimiters, healthCheckers)
+}
+
+func closeRuntimeResources(proxyHandlers []*proxy.Handler, rateLimiters []*ratelimit.TokenBucket, healthCheckers []*health.Checker) {
+	for _, proxyHandler := range proxyHandlers {
 		proxyHandler.CloseIdleConnections()
 	}
-	for _, limiter := range s.rateLimiters {
+	for _, limiter := range rateLimiters {
 		limiter.Close()
 	}
-	for _, checker := range s.healthCheckers {
+	for _, checker := range healthCheckers {
 		checker.Close()
 	}
 }

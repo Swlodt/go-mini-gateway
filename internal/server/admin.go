@@ -67,6 +67,7 @@ func (s *Server) registerAdminRoutes(mux *http.ServeMux) {
 		mux.Handle("/admin/health", s.adminAuthMiddleware(http.HandlerFunc(s.handleAdminHealth)))
 		mux.Handle("/admin/stats", s.adminAuthMiddleware(http.HandlerFunc(s.handleAdminStats)))
 		mux.Handle("/admin/metrics", s.adminAuthMiddleware(http.HandlerFunc(s.handleAdminMetrics)))
+		mux.Handle("/admin/reload", s.adminAuthMiddleware(http.HandlerFunc(s.handleAdminReload)))
 		if s.pprofEnabled {
 			s.registerPprofRoutes(mux)
 		}
@@ -101,27 +102,9 @@ func (s *Server) handleAdminRoutes(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	routes := make([]routeDTO, 0, len(s.routes))
-
-	for _, route := range s.routes {
-		upstreams := route.upstreams
-		if route.proxyHandler != nil {
-			upstreams = route.proxyHandler.UpstreamSnapshots()
-		}
-
-		routes = append(routes, routeDTO{
-			ID:                 route.id,
-			Prefix:             route.prefix,
-			StripPrefix:        route.stripPrefix,
-			Target:             route.target,
-			Upstreams:          upstreams,
-			RateLimitRPS:       route.rateLimitRPS,
-			RateLimitBurst:     route.rateLimitBurst,
-			MaxConcurrency:     route.maxConcurrency,
-			HealthCheckEnabled: route.healthCheckEnabled,
-			HealthCheckPath:    route.healthCheckPath,
-		})
-	}
+	s.mu.RLock()
+	routes := s.routeDTOsLocked()
+	s.mu.RUnlock()
 
 	writeJSON(w, http.StatusOK, routes)
 }
@@ -132,6 +115,7 @@ func (s *Server) handleAdminHealth(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s.mu.RLock()
 	items := make([]healthDTO, 0, len(s.routes))
 
 	for _, route := range s.routes {
@@ -185,6 +169,8 @@ func (s *Server) handleAdminHealth(w http.ResponseWriter, r *http.Request) {
 		items = append(items, item)
 	}
 
+	s.mu.RUnlock()
+
 	writeJSON(w, http.StatusOK, items)
 }
 
@@ -194,6 +180,7 @@ func (s *Server) handleAdminStats(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s.mu.RLock()
 	resp := statusDTO{
 		Routes: make([]routeStatusDTO, 0, len(s.routes)),
 	}
@@ -225,6 +212,8 @@ func (s *Server) handleAdminStats(w http.ResponseWriter, r *http.Request) {
 		}
 		resp.Routes = append(resp.Routes, item)
 	}
+
+	s.mu.RUnlock()
 
 	writeJSON(w, http.StatusOK, resp)
 }
