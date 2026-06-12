@@ -8,6 +8,21 @@ import (
 	"time"
 )
 
+var defaultDurationBucketsSeconds = []float64{
+	0.001,
+	0.005,
+	0.01,
+	0.025,
+	0.05,
+	0.1,
+	0.25,
+	0.5,
+	1,
+	2.5,
+	5,
+	10,
+}
+
 type Registry struct {
 	mu        sync.RWMutex
 	startTime time.Time
@@ -16,11 +31,12 @@ type Registry struct {
 }
 
 type bucket struct {
-	requests       int64
-	bytesWritten   int64
-	totalLatencyNs int64
-	maxLatencyNs   int64
-	statusCodes    map[int]int64
+	requests             int64
+	bytesWritten         int64
+	totalLatencyNs       int64
+	maxLatencyNs         int64
+	statusCodes          map[int]int64
+	durationBucketCounts []int64
 }
 
 type Record struct {
@@ -32,17 +48,24 @@ type Record struct {
 
 type Snapshot struct {
 	Uptime        string                    `json:"uptime"`
-	UptimeSeconds float64                   `json:"UptimeSeconds"`
+	UptimeSeconds float64                   `json:"uptimeSeconds"`
 	Total         BucketSnapshot            `json:"total"`
 	Routes        map[string]BucketSnapshot `json:"routes"`
 }
 
 type BucketSnapshot struct {
-	Requests     int64            `json:"requests"`
-	BytesWritten int64            `json:"bytesWritten"`
-	AvgLatencyMs float64          `json:"avgLatencyMs"`
-	MaxLatencyMs float64          `json:"maxLatencyMs"`
-	StatusCodes  map[string]int64 `json:"statusCodes"`
+	Requests          int64             `json:"requests"`
+	BytesWritten      int64             `json:"bytesWritten"`
+	AvgLatencyMs      float64           `json:"avgLatencyMs"`
+	MaxLatencyMs      float64           `json:"maxLatencyMs"`
+	StatusCodes       map[string]int64  `json:"statusCodes"`
+	DurationHistogram HistogramSnapshot `json:"durationHistogram"`
+}
+
+type HistogramSnapshot struct {
+	Buckets    map[string]int64 `json:"buckets"`
+	SumSeconds float64          `json:"sumSeconds"`
+	Count      int64            `json:"count"`
 }
 
 func NewRegistry() *Registry {
@@ -55,7 +78,8 @@ func NewRegistry() *Registry {
 
 func newBucket() *bucket {
 	return &bucket{
-		statusCodes: make(map[int]int64),
+		statusCodes:          make(map[int]int64),
+		durationBucketCounts: make([]int64, len(defaultDurationBucketsSeconds)),
 	}
 }
 
@@ -73,6 +97,9 @@ func (r *Registry) Record(record Record) {
 	}
 
 	latencyNs := record.Latency.Nanoseconds()
+	if latencyNs < 0 {
+		latencyNs = 0
+	}
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -96,6 +123,13 @@ func recordBucket(b *bucket, statusCode int, bytesWritten int64, latencyNs int64
 
 	if latencyNs > b.maxLatencyNs {
 		b.maxLatencyNs = latencyNs
+	}
+
+	latencySeconds := float64(latencyNs) / float64(time.Second)
+	for i, upperBound := range defaultDurationBucketsSeconds {
+		if latencySeconds <= upperBound {
+			b.durationBucketCounts[i]++
+		}
 	}
 }
 
@@ -132,7 +166,8 @@ func (r *Registry) Snapshot() Snapshot {
 func snapshotBucket(b *bucket) BucketSnapshot {
 	if b == nil {
 		return BucketSnapshot{
-			StatusCodes: make(map[string]int64),
+			StatusCodes:       make(map[string]int64),
+			DurationHistogram: emptyHistogramSnapshot(),
 		}
 	}
 
@@ -156,10 +191,45 @@ func snapshotBucket(b *bucket) BucketSnapshot {
 	maxLatencyMs := float64(b.maxLatencyNs) / float64(time.Millisecond)
 
 	return BucketSnapshot{
-		Requests:     b.requests,
-		BytesWritten: b.bytesWritten,
-		AvgLatencyMs: avgLatencyMs,
-		MaxLatencyMs: maxLatencyMs,
-		StatusCodes:  statusCodes,
+		Requests:          b.requests,
+		BytesWritten:      b.bytesWritten,
+		AvgLatencyMs:      avgLatencyMs,
+		MaxLatencyMs:      maxLatencyMs,
+		StatusCodes:       statusCodes,
+		DurationHistogram: snapshotHistogram(b),
 	}
+}
+
+func snapshotHistogram(b *bucket) HistogramSnapshot {
+	if b == nil {
+		return emptyHistogramSnapshot()
+	}
+
+	buckets := make(map[string]int64, len(defaultDurationBucketsSeconds)+1)
+	for i, upperBound := range defaultDurationBucketsSeconds {
+		buckets[formatBucketBoundary(upperBound)] = b.durationBucketCounts[i]
+	}
+	buckets["+Inf"] = b.requests
+
+	return HistogramSnapshot{
+		Buckets:    buckets,
+		SumSeconds: float64(b.totalLatencyNs) / float64(time.Second),
+		Count:      b.requests,
+	}
+}
+
+func emptyHistogramSnapshot() HistogramSnapshot {
+	buckets := make(map[string]int64, len(defaultDurationBucketsSeconds)+1)
+	for _, upperBound := range defaultDurationBucketsSeconds {
+		buckets[formatBucketBoundary(upperBound)] = 0
+	}
+	buckets["+Inf"] = 0
+
+	return HistogramSnapshot{
+		Buckets: buckets,
+	}
+}
+
+func formatBucketBoundary(value float64) string {
+	return strconv.FormatFloat(value, 'f', -1, 64)
 }

@@ -104,6 +104,45 @@ func TestRegistryLatencySnapshot(t *testing.T) {
 	}
 }
 
+func TestRegistryDurationHistogram(t *testing.T) {
+	registry := NewRegistry()
+
+	registry.Record(Record{
+		RouteID:    "demo",
+		StatusCode: 200,
+		Latency:    500 * time.Microsecond,
+	})
+
+	registry.Record(Record{
+		RouteID:    "demo",
+		StatusCode: 200,
+		Latency:    20 * time.Millisecond,
+	})
+
+	snapshot := registry.Snapshot()
+	histogram := snapshot.Routes["demo"].DurationHistogram
+
+	if histogram.Count != 2 {
+		t.Fatalf("histogram count got %d, want 2", histogram.Count)
+	}
+
+	if histogram.Buckets["0.001"] != 1 {
+		t.Fatalf("bucket 0.001 got %d, want 1", histogram.Buckets["0.001"])
+	}
+
+	if histogram.Buckets["0.025"] != 2 {
+		t.Fatalf("bucket 0.025 got %d, want 2", histogram.Buckets["0.025"])
+	}
+
+	if histogram.Buckets["+Inf"] != 2 {
+		t.Fatalf("bucket +Inf got %d, want 2", histogram.Buckets["+Inf"])
+	}
+
+	if histogram.SumSeconds != 0.0205 {
+		t.Fatalf("sum seconds got %f, want 0.0205", histogram.SumSeconds)
+	}
+}
+
 func TestRegistryDefaultValues(t *testing.T) {
 	registry := NewRegistry()
 
@@ -178,6 +217,20 @@ func TestPrometheusText(t *testing.T) {
 
 	assertContains(t, text, "gateway_uptime_seconds")
 	assertContains(t, text, "gateway_http_bytes_written_total 120")
+
+	assertContains(t, text, "# TYPE gateway_http_request_duration_seconds histogram")
+	assertContains(t, text, `gateway_http_request_duration_seconds_bucket{le="0.005"} 1`)
+	assertContains(t, text, `gateway_http_request_duration_seconds_bucket{le="0.01"} 2`)
+	assertContains(t, text, `gateway_http_request_duration_seconds_bucket{le="+Inf"} 2`)
+	assertContains(t, text, "gateway_http_request_duration_seconds_sum 0.012000000")
+	assertContains(t, text, "gateway_http_request_duration_seconds_count 2")
+
+	assertContains(t, text, "# TYPE gateway_route_http_request_duration_seconds histogram")
+	assertContains(t, text, `gateway_route_http_request_duration_seconds_bucket{le="0.005",route="demo"} 1`)
+	assertContains(t, text, `gateway_route_http_request_duration_seconds_bucket{le="0.01",route="demo"} 2`)
+	assertContains(t, text, `gateway_route_http_request_duration_seconds_bucket{le="+Inf",route="demo"} 2`)
+	assertContains(t, text, `gateway_route_http_request_duration_seconds_sum{route="demo"} 0.012000000`)
+	assertContains(t, text, `gateway_route_http_request_duration_seconds_count{route="demo"} 2`)
 }
 
 func TestPrometheusLabelEscaping(t *testing.T) {
